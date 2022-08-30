@@ -835,10 +835,10 @@ public class TransactionManager {
         }
     }
 
-    Node coordinator(FindCoordinatorRequest.CoordinatorType type) {
+    Node coordinator(CoordinatorType type, String coordinatorKey) {
         switch (type) {
             case GROUP:
-                return consumerGroupCoordinator;
+                return consumerGroupCoordinator.get(coordinatorKey);
             case TRANSACTION:
                 return transactionCoordinator;
             default:
