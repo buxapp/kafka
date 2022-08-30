@@ -1574,7 +1574,7 @@ public class TransactionManager {
                 Node node = new Node(coordinatorData.nodeId(), coordinatorData.host(), coordinatorData.port());
                 switch (coordinatorType) {
                     case GROUP:
-                        consumerGroupCoordinator.put(builder.data().key(), node);
+                        consumerGroupCoordinator.put(key, node);
                         break;
                     case TRANSACTION:
                         transactionCoordinator = node;

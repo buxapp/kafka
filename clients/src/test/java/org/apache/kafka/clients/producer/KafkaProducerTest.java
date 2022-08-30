@@ -1482,7 +1482,7 @@ public class KafkaProducerTest {
             assertDurationAtLeast(producer, "txn-init-time-ns-total", tick.toNanos());
 
             client.prepareResponse(addOffsetsToTxnResponse(Errors.NONE));
-            client.prepareResponse(FindCoordinatorResponse.prepareResponse(Errors.NONE, "some.id", NODE));
+            client.prepareResponse(FindCoordinatorResponse.prepareResponse(Errors.NONE, "group", NODE));
             client.prepareResponse(txnOffsetsCommitResponse(Collections.singletonMap(
                 new TopicPartition("topic", 0), Errors.NONE)));
             client.prepareResponse(endTxnResponse(Errors.NONE));
