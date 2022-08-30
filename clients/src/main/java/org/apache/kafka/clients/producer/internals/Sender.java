@@ -441,7 +441,7 @@ public class Sender implements Runnable {
         try {
             FindCoordinatorRequest.CoordinatorType coordinatorType = nextRequestHandler.coordinatorType();
             targetNode = coordinatorType != null ?
-                    transactionManager.coordinator(coordinatorType) :
+                    transactionManager.coordinator(coordinatorType, nextRequestHandler.coordinatorKey()) :
                     client.leastLoadedNode(time.milliseconds());
             if (targetNode != null) {
                 if (!awaitNodeReady(targetNode, coordinatorType)) {
