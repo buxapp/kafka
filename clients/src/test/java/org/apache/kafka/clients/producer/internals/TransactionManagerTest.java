@@ -1692,8 +1692,8 @@ public class TransactionManagerTest {
         TransactionalRequestResult result = transactionManager.initializeTransactions();
         prepareFindCoordinatorResponse(error, false, CoordinatorType.TRANSACTION, transactionalId);
         prepareFindCoordinatorResponse(Errors.NONE, false, CoordinatorType.TRANSACTION, transactionalId);
-        runUntil(() -> transactionManager.coordinator(CoordinatorType.TRANSACTION) != null);
-        assertEquals(brokerNode, transactionManager.coordinator(CoordinatorType.TRANSACTION));
+        runUntil(() -> transactionManager.coordinator(CoordinatorType.TRANSACTION, null) != null);
+        assertEquals(brokerNode, transactionManager.coordinator(CoordinatorType.TRANSACTION, null));
 
         // Ensure InitPid retries.
         prepareInitPidResponse(error, false, producerId, epoch);
@@ -1726,8 +1726,8 @@ public class TransactionManagerTest {
         TransactionalRequestResult result = transactionManager.initializeTransactions();
         prepareFindCoordinatorResponse(Errors.COORDINATOR_NOT_AVAILABLE, false, CoordinatorType.TRANSACTION, transactionalId);
         prepareFindCoordinatorResponse(Errors.NONE, false, CoordinatorType.TRANSACTION, transactionalId);
-        runUntil(() -> transactionManager.coordinator(CoordinatorType.TRANSACTION) != null);
-        assertEquals(brokerNode, transactionManager.coordinator(CoordinatorType.TRANSACTION));
+        runUntil(() -> transactionManager.coordinator(CoordinatorType.TRANSACTION, null) != null);
+        assertEquals(brokerNode, transactionManager.coordinator(CoordinatorType.TRANSACTION, null));
 
         prepareInitPidResponse(Errors.NONE, false, producerId, epoch);
         runUntil(transactionManager::hasProducerId);

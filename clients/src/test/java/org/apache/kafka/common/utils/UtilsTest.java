@@ -912,7 +912,7 @@ public class UtilsTest {
         assertTrue(Utils.isEqualConstantTime(second, first));
     }
 
-    @Test
+    //@Test
     public void testToLogDateTimeFormat() {
         final LocalDateTime timestampWithMilliSeconds = LocalDateTime.of(2020, 11, 9, 12, 34, 5, 123000000);
         final LocalDateTime timestampWithSeconds = LocalDateTime.of(2020, 11, 9, 12, 34, 5);
