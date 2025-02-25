@@ -3516,8 +3516,8 @@ public class TransactionManagerTest {
     public void testTransactionAbortableExceptionInInitProducerId() {
         TransactionalRequestResult initPidResult = transactionManager.initializeTransactions();
         prepareFindCoordinatorResponse(Errors.NONE, false, CoordinatorType.TRANSACTION, transactionalId);
-        runUntil(() -> transactionManager.coordinator(CoordinatorType.TRANSACTION) != null);
-        assertEquals(brokerNode, transactionManager.coordinator(CoordinatorType.TRANSACTION));
+        runUntil(() -> transactionManager.coordinator(CoordinatorType.TRANSACTION, null) != null);
+        assertEquals(brokerNode, transactionManager.coordinator(CoordinatorType.TRANSACTION, null));
 
         prepareInitPidResponse(Errors.TRANSACTION_ABORTABLE, false, producerId, RecordBatch.NO_PRODUCER_EPOCH);
         runUntil(transactionManager::hasError);
