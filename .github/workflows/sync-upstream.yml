@@ -109,12 +109,50 @@ jobs:
                 echo "::error::Manual intervention required to resolve conflicts"
                 git merge --abort
 
-                # Create an issue to notify about the conflict
-                echo "Creating notification issue about merge conflict..."
+                # Create an issue to notify about the conflict and trigger Copilot agent
+                echo "Creating notification issue with Copilot Workspace link..."
+                
+                # Build issue body in a temp file
+                {
+                  echo "## Merge Conflict Detected - GitHub Copilot Workspace Available"
+                  echo ""
+                  echo "Automatic fork synchronization encountered a merge conflict on the \`$branch\` branch."
+                  echo ""
+                  echo "### Context"
+                  echo "- **Branch:** \`$branch\`"
+                  echo "- **Upstream:** apache/kafka"
+                  echo "- **Current HEAD:** \`$BEFORE_COMMIT\`"
+                  echo "- **Upstream HEAD:** \`$UPSTREAM_COMMIT\`"
+                  echo ""
+                  echo "### Resolution Options"
+                  echo ""
+                  echo "#### Option 1: Use GitHub Copilot Workspace (Recommended)"
+                  echo "Click the **\"Open in Workspace\"** button in the Development section on the right side of this issue. Copilot will help you automatically resolve the conflicts."
+                  echo ""
+                  echo "Steps:"
+                  echo "1. Click \"Open in Workspace\" button on this issue"
+                  echo "2. Review Copilot's proposed resolution plan"
+                  echo "3. Verify BUX-specific patches are preserved"
+                  echo "4. Click \"Implement\" to apply changes"
+                  echo "5. Review and merge the generated PR"
+                  echo ""
+                  echo "#### Option 2: Manual Resolution"
+                  echo "1. Checkout: \`git checkout $branch\`"
+                  echo "2. Merge: \`git merge upstream/$branch\`"
+                  echo "3. Resolve conflicts while preserving BUX-specific patches"
+                  echo "4. Test and push changes"
+                  echo ""
+                  echo "### Important Notes"
+                  echo "- **Preserve all BUX-specific patches during resolution**"
+                  echo "- Test the merged code before pushing"
+                  echo "- Close this issue once conflicts are resolved"
+                } > "/tmp/merge_conflict_issue_${branch}_$$.md"
+                
+                # Create issue with copilot-workspace label
                 gh issue create \
-                  --title "Fork sync conflict on $branch" \
-                  --body "Automatic fork synchronization encountered a merge conflict on the \`$branch\` branch. Manual resolution is required. Please merge upstream changes manually while preserving BUX-specific patches." \
-                  --label "sync,conflict" \
+                  --title "Merge Conflict: Resolve using GitHub Copilot Workspace on $branch" \
+                  --label "sync,conflict,copilot-workspace" \
+                  --body-file "/tmp/merge_conflict_issue_${branch}_$$.md" \
                   || echo "Failed to create issue"
               fi
             fi
