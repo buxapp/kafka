@@ -25,6 +25,7 @@ import org.apache.kafka.streams.errors.StreamsException;
 import org.apache.kafka.streams.errors.TaskMigratedException;
 import org.apache.kafka.streams.processor.StateStore;
 import org.apache.kafka.streams.processor.TaskId;
+
 import org.slf4j.Logger;
 
 import java.util.Collection;
@@ -38,7 +39,9 @@ import static org.apache.kafka.streams.processor.internals.Task.State.CLOSED;
 import static org.apache.kafka.streams.processor.internals.Task.State.CREATED;
 
 public abstract class AbstractTask implements Task {
-    private final static long NO_DEADLINE = -1L;
+    private static final long NO_DEADLINE = -1L;
+    protected static final long NO_OFFSET = -1;
+    protected static final int NO_PARTITION = -1;
 
     private Task.State state = CREATED;
     private long deadlineMs = NO_DEADLINE;
@@ -123,8 +126,8 @@ public abstract class AbstractTask implements Task {
     }
 
     @Override
-    public StateStore getStore(final String name) {
-        return stateMgr.getStore(name);
+    public StateStore store(final String name) {
+        return stateMgr.store(name);
     }
 
     @Override
@@ -149,9 +152,9 @@ public abstract class AbstractTask implements Task {
 
     final void transitionTo(final Task.State newState) {
         final State oldState = state();
-
         if (oldState.isValidTransition(newState)) {
             state = newState;
+            stateMgr.transitionTaskState(newState);
         } else {
             throw new IllegalStateException("Invalid transition from " + oldState + " to " + newState);
         }

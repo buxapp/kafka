@@ -19,9 +19,9 @@ package org.apache.kafka.connect.util;
 import org.slf4j.MDC;
 
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * A utility for defining Mapped Diagnostic Context (MDC) for SLF4J logs.
@@ -49,7 +49,7 @@ public final class LoggingContext implements AutoCloseable {
      */
     public static final String CONNECTOR_CONTEXT = "connector.context";
 
-    public static final Collection<String> ALL_CONTEXTS = Collections.singleton(CONNECTOR_CONTEXT);
+    public static final Collection<String> ALL_CONTEXTS = Set.of(CONNECTOR_CONTEXT);
 
     /**
      * The Scope values used by Connect when specifying the context.
@@ -103,18 +103,6 @@ public final class LoggingContext implements AutoCloseable {
         Objects.requireNonNull(connectorName);
         LoggingContext context = new LoggingContext();
         MDC.put(CONNECTOR_CONTEXT, prefixFor(connectorName, Scope.WORKER, null));
-        return context;
-    }
-
-    /**
-     * Modify the current {@link MDC} logging context to set the {@link #CONNECTOR_CONTEXT connector context} to include the
-     * supplied connector name and the {@link Scope#VALIDATE} scope.
-     *
-     * @param connectorName the connector name
-     */
-    public static LoggingContext forValidation(String connectorName) {
-        LoggingContext context = new LoggingContext();
-        MDC.put(CONNECTOR_CONTEXT, prefixFor(connectorName, Scope.VALIDATE, null));
         return context;
     }
 

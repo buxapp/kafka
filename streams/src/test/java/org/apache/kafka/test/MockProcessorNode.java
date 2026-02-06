@@ -16,20 +16,21 @@
  */
 package org.apache.kafka.test;
 
-import java.util.Collections;
-import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.kafka.streams.processor.PunctuationType;
 import org.apache.kafka.streams.processor.api.Record;
 import org.apache.kafka.streams.processor.internals.InternalProcessorContext;
-import org.apache.kafka.streams.processor.internals.ProcessorAdapter;
 import org.apache.kafka.streams.processor.internals.ProcessorNode;
+
+import java.time.Instant;
+import java.util.Collections;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class MockProcessorNode<KIn, VIn, KOut, VOut> extends ProcessorNode<KIn, VIn, KOut, VOut> {
 
     private static final String NAME = "MOCK-PROCESS-";
     private static final AtomicInteger INDEX = new AtomicInteger(1);
 
-    public final MockProcessor<KIn, VIn> mockProcessor;
+    public final MockProcessor<KIn, VIn, KOut, VOut> mockProcessor;
 
     public boolean closed;
     public boolean initialized;
@@ -42,13 +43,16 @@ public class MockProcessorNode<KIn, VIn, KOut, VOut> extends ProcessorNode<KIn, 
         this(new MockProcessor<>(punctuationType, scheduleInterval));
     }
 
+    public MockProcessorNode(final Instant startTime, final long scheduleInterval, final PunctuationType punctuationType) {
+        this(new MockProcessor<>(punctuationType, startTime, scheduleInterval));
+    }
+
     public MockProcessorNode() {
         this(new MockProcessor<>());
     }
 
-    @SuppressWarnings("unchecked")
-    private MockProcessorNode(final MockProcessor<KIn, VIn> mockProcessor) {
-        super(NAME + INDEX.getAndIncrement(), ProcessorAdapter.adapt(mockProcessor), Collections.<String>emptySet());
+    private MockProcessorNode(final MockProcessor<KIn, VIn, KOut, VOut> mockProcessor) {
+        super(NAME + INDEX.getAndIncrement(), mockProcessor, Collections.emptySet());
 
         this.mockProcessor = mockProcessor;
     }
@@ -61,7 +65,7 @@ public class MockProcessorNode<KIn, VIn, KOut, VOut> extends ProcessorNode<KIn, 
 
     @Override
     public void process(final Record<KIn, VIn> record) {
-        mockProcessor.process(record.key(), record.value());
+        mockProcessor.process(record);
     }
 
     @Override

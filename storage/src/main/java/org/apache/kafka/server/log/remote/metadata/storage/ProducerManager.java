@@ -24,6 +24,7 @@ import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicIdPartition;
 import org.apache.kafka.server.log.remote.metadata.storage.serialization.RemoteLogMetadataSerde;
 import org.apache.kafka.server.log.remote.storage.RemoteLogMetadata;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -56,9 +57,9 @@ public class ProducerManager implements Closeable {
      * is considered complete.
      *
      * @param remoteLogMetadata RemoteLogMetadata to be published
-     * @return
+     * @return CompletableFuture that completes with RecordMetadata when the message is successfully published
      */
-    public CompletableFuture<RecordMetadata> publishMessage(RemoteLogMetadata remoteLogMetadata) {
+    CompletableFuture<RecordMetadata> publishMessage(RemoteLogMetadata remoteLogMetadata) {
         CompletableFuture<RecordMetadata> future = new CompletableFuture<>();
 
         TopicIdPartition topicIdPartition = remoteLogMetadata.topicIdPartition();
@@ -72,15 +73,11 @@ public class ProducerManager implements Closeable {
         }
 
         try {
-            Callback callback = new Callback() {
-                @Override
-                public void onCompletion(RecordMetadata metadata,
-                                         Exception exception) {
-                    if (exception != null) {
-                        future.completeExceptionally(exception);
-                    } else {
-                        future.complete(metadata);
-                    }
+            Callback callback = (metadata, exception) -> {
+                if (exception != null) {
+                    future.completeExceptionally(exception);
+                } else {
+                    future.complete(metadata);
                 }
             };
             producer.send(new ProducerRecord<>(rlmmConfig.remoteLogMetadataTopicName(), metadataPartitionNum, null,

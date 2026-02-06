@@ -18,8 +18,9 @@ package org.apache.kafka.raft;
 
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.Uuid;
+import org.apache.kafka.common.compress.Compression;
+import org.apache.kafka.common.errors.CorruptRecordException;
 import org.apache.kafka.common.errors.OffsetOutOfRangeException;
-import org.apache.kafka.common.record.CompressionType;
 import org.apache.kafka.common.record.MemoryRecords;
 import org.apache.kafka.common.record.MemoryRecordsBuilder;
 import org.apache.kafka.common.record.Record;
@@ -29,19 +30,19 @@ import org.apache.kafka.common.record.SimpleRecord;
 import org.apache.kafka.common.record.TimestampType;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.Utils;
+import org.apache.kafka.server.common.OffsetAndEpoch;
 import org.apache.kafka.snapshot.MockRawSnapshotReader;
 import org.apache.kafka.snapshot.MockRawSnapshotWriter;
 import org.apache.kafka.snapshot.RawSnapshotReader;
 import org.apache.kafka.snapshot.RawSnapshotWriter;
+
 import org.slf4j.Logger;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
@@ -53,7 +54,7 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
-public class MockLog implements ReplicatedLog {
+public class MockLog implements RaftLog {
     private static final AtomicLong ID_GENERATOR = new AtomicLong();
 
     private final List<EpochStartOffset> epochStartOffsets = new ArrayList<>();
@@ -80,14 +81,15 @@ public class MockLog implements ReplicatedLog {
 
     @Override
     public void truncateTo(long offset) {
-        if (offset < highWatermark.offset) {
+        if (offset < highWatermark.offset()) {
             throw new IllegalArgumentException("Illegal attempt to truncate to offset " + offset +
                 " which is below the current high watermark " + highWatermark);
         }
 
+        logger.debug("Truncating log to end offset {}", offset);
         batches.removeIf(entry -> entry.lastOffset() >= offset);
         epochStartOffsets.removeIf(epochStartOffset -> epochStartOffset.startOffset >= offset);
-        firstUnflushedOffset = Math.min(firstUnflushedOffset, endOffset().offset);
+        firstUnflushedOffset = Math.min(firstUnflushedOffset, endOffset().offset());
     }
 
     @Override
@@ -96,7 +98,9 @@ public class MockLog implements ReplicatedLog {
         latestSnapshotId().ifPresent(snapshotId -> {
             if (snapshotId.epoch() > logLastFetchedEpoch().orElse(0) ||
                 (snapshotId.epoch() == logLastFetchedEpoch().orElse(0) &&
-                 snapshotId.offset() > endOffset().offset)) {
+                 snapshotId.offset() > endOffset().offset())) {
+
+                logger.debug("Truncating to the latest snapshot at {}", snapshotId);
 
                 batches.clear();
                 epochStartOffsets.clear();
@@ -113,13 +117,13 @@ public class MockLog implements ReplicatedLog {
 
     @Override
     public void updateHighWatermark(LogOffsetMetadata offsetMetadata) {
-        if (this.highWatermark.offset > offsetMetadata.offset) {
+        if (this.highWatermark.offset() > offsetMetadata.offset()) {
             throw new IllegalArgumentException("Non-monotonic update of current high watermark " +
                 highWatermark + " to new value " + offsetMetadata);
-        } else if (offsetMetadata.offset > endOffset().offset) {
+        } else if (offsetMetadata.offset() > endOffset().offset()) {
             throw new IllegalArgumentException("Attempt to update high watermark to " + offsetMetadata +
                 " which is larger than the current end offset " + endOffset());
-        } else if (offsetMetadata.offset < startOffset()) {
+        } else if (offsetMetadata.offset() < startOffset()) {
             throw new IllegalArgumentException("Attempt to update high watermark to " + offsetMetadata +
                 " which is smaller than the current start offset " + startOffset());
         }
@@ -144,8 +148,8 @@ public class MockLog implements ReplicatedLog {
     }
 
     private Optional<OffsetMetadata> metadataForOffset(long offset) {
-        if (offset == endOffset().offset) {
-            return endOffset().metadata;
+        if (offset == endOffset().offset()) {
+            return endOffset().metadata();
         }
 
         for (LogBatch batch : batches) {
@@ -163,12 +167,12 @@ public class MockLog implements ReplicatedLog {
     }
 
     private void assertValidHighWatermarkMetadata(LogOffsetMetadata offsetMetadata) {
-        if (!offsetMetadata.metadata.isPresent()) {
+        if (offsetMetadata.metadata().isEmpty()) {
             return;
         }
 
-        long id = ((MockOffsetMetadata) offsetMetadata.metadata.get()).id;
-        long offset = offsetMetadata.offset;
+        long id = ((MockOffsetMetadata) offsetMetadata.metadata().get()).id;
+        long offset = offsetMetadata.offset();
 
         metadataForOffset(offset).ifPresent(metadata -> {
             long entryId = ((MockOffsetMetadata) metadata).id;
@@ -198,10 +202,6 @@ public class MockLog implements ReplicatedLog {
         return lastOffsetAndEpochFiltered(epochStartOffset -> epochStartOffset.epoch <= epoch);
     }
 
-    private OffsetAndEpoch epochForEndOffset(long endOffset) {
-        return lastOffsetAndEpochFiltered(epochStartOffset -> epochStartOffset.startOffset < endOffset);
-    }
-
     private OffsetAndEpoch lastOffsetAndEpochFiltered(Predicate<EpochStartOffset> predicate) {
         int epochLowerBound = earliestSnapshotId().map(OffsetAndEpoch::epoch).orElse(0);
         for (EpochStartOffset epochStartOffset : epochStartOffsets) {
@@ -211,7 +211,7 @@ public class MockLog implements ReplicatedLog {
             epochLowerBound = epochStartOffset.epoch;
         }
 
-        return new OffsetAndEpoch(endOffset().offset, lastFetchedEpoch());
+        return new OffsetAndEpoch(endOffset().offset(), lastFetchedEpoch());
     }
 
     private Optional<LogEntry> lastEntry() {
@@ -279,30 +279,33 @@ public class MockLog implements ReplicatedLog {
 
     @Override
     public LogAppendInfo appendAsLeader(Records records, int epoch) {
-        return append(records, OptionalInt.of(epoch));
+        return append(records, epoch, true);
     }
 
-    private Long appendBatch(LogBatch batch) {
+    private long appendBatch(LogBatch batch) {
         if (batch.epoch > lastFetchedEpoch()) {
             epochStartOffsets.add(new EpochStartOffset(batch.epoch, batch.firstOffset()));
         }
+
         batches.add(batch);
         return batch.firstOffset();
     }
 
     @Override
-    public LogAppendInfo appendAsFollower(Records records) {
-        return append(records, OptionalInt.empty());
+    public LogAppendInfo appendAsFollower(Records records, int epoch) {
+        return append(records, epoch, false);
     }
 
-    private LogAppendInfo append(Records records, OptionalInt epoch) {
-        if (records.sizeInBytes() == 0)
+    private LogAppendInfo append(Records records, int epoch, boolean isLeader) {
+        if (records.sizeInBytes() == 0) {
             throw new IllegalArgumentException("Attempt to append an empty record set");
+        }
 
-        long baseOffset = endOffset().offset;
+        long baseOffset = endOffset().offset();
         long lastOffset = baseOffset;
+        boolean hasBatches = false;
         for (RecordBatch batch : records.batches()) {
-            if (batch.baseOffset() != endOffset().offset) {
+            if (batch.baseOffset() != endOffset().offset()) {
                 /* KafkaMetadataLog throws an kafka.common.UnexpectedAppendOffsetException this is the
                  * best we can do from this module.
                  */
@@ -310,20 +313,48 @@ public class MockLog implements ReplicatedLog {
                     String.format(
                         "Illegal append at offset %s with current end offset of %s",
                         batch.baseOffset(),
-                        endOffset().offset
+                        endOffset().offset()
                     )
+                );
+            } else if (isLeader && epoch != batch.partitionLeaderEpoch()) {
+                // the partition leader epoch is set and does not match the one set in the batch
+                throw new RuntimeException(
+                    String.format(
+                        "Epoch %s doesn't match batch leader epoch %s",
+                        epoch,
+                        batch.partitionLeaderEpoch()
+                    )
+                );
+            } else if (!isLeader && batch.partitionLeaderEpoch() > epoch) {
+                /* To avoid inconsistent log replication, follower should only append record
+                 * batches with an epoch less than or equal to the leader epoch. There is more
+                 * details on this issue and scenario in KAFKA-18723.
+                 */
+                break;
+            }
+
+            hasBatches = true;
+            LogBatch logBatch = new LogBatch(
+                batch.partitionLeaderEpoch(),
+                batch.isControlBatch(),
+                buildEntries(batch, Record::offset)
+            );
+
+            if (logger.isDebugEnabled()) {
+                logger.debug(
+                    "{} appending to the log {}",
+                    isLeader ? "Leader" : "Follower",
+                    logBatch
                 );
             }
 
-            List<LogEntry> entries = buildEntries(batch, Record::offset);
-            appendBatch(
-                new LogBatch(
-                    epoch.orElseGet(batch::partitionLeaderEpoch),
-                    batch.isControlBatch(),
-                    entries
-                )
-            );
-            lastOffset = entries.get(entries.size() - 1).offset;
+            appendBatch(logBatch);
+            lastOffset = logBatch.last().offset;
+        }
+
+        if (!hasBatches) {
+            // This emulates the default handling when records doesn't have enough bytes for a batch
+            throw new CorruptRecordException("Append failed unexpectedly");
         }
 
         return new LogAppendInfo(baseOffset, lastOffset);
@@ -332,7 +363,7 @@ public class MockLog implements ReplicatedLog {
     @Override
     public void flush(boolean forceFlushActiveSegment) {
         flushedSinceLastChecked = true;
-        firstUnflushedOffset = endOffset().offset;
+        firstUnflushedOffset = endOffset().offset();
     }
 
     @Override
@@ -365,9 +396,9 @@ public class MockLog implements ReplicatedLog {
     public List<LogBatch> readBatches(long startOffset, OptionalLong maxOffsetOpt) {
         verifyOffsetInRange(startOffset);
 
-        long maxOffset = maxOffsetOpt.orElse(endOffset().offset);
+        long maxOffset = maxOffsetOpt.orElse(endOffset().offset());
         if (startOffset == maxOffset) {
-            return Collections.emptyList();
+            return List.of();
         }
 
         return batches.stream()
@@ -376,9 +407,9 @@ public class MockLog implements ReplicatedLog {
     }
 
     private void verifyOffsetInRange(long offset) {
-        if (offset > endOffset().offset) {
+        if (offset > endOffset().offset()) {
             throw new OffsetOutOfRangeException("Requested offset " + offset + " is larger than " +
-                "then log end offset " + endOffset().offset);
+                "then log end offset " + endOffset().offset());
         }
 
         if (offset < this.startOffset()) {
@@ -389,13 +420,9 @@ public class MockLog implements ReplicatedLog {
 
     @Override
     public LogFetchInfo read(long startOffset, Isolation isolation) {
-        OptionalLong maxOffsetOpt = isolation == Isolation.COMMITTED ?
-            OptionalLong.of(highWatermark.offset) :
-            OptionalLong.empty();
-
         verifyOffsetInRange(startOffset);
 
-        long maxOffset = maxOffsetOpt.orElse(endOffset().offset);
+        long maxOffset = isolation == Isolation.COMMITTED ? highWatermark.offset() : endOffset().offset();
         if (startOffset >= maxOffset) {
             return new LogFetchInfo(MemoryRecords.EMPTY, new LogOffsetMetadata(
                 startOffset, metadataForOffset(startOffset)));
@@ -404,6 +431,13 @@ public class MockLog implements ReplicatedLog {
         ByteBuffer buffer = ByteBuffer.allocate(512);
         int batchCount = 0;
         LogOffsetMetadata batchStartOffset = null;
+
+        logger.debug(
+            "Looking for a batch that starts at {} and ends at {} for isolation {}",
+            startOffset,
+            maxOffset,
+            isolation
+        );
 
         for (LogBatch batch : batches) {
             // Note that start offset is inclusive while max offset is exclusive. We only return
@@ -439,7 +473,7 @@ public class MockLog implements ReplicatedLog {
 
     @Override
     public void initializeLeaderEpoch(int epoch) {
-        long startOffset = endOffset().offset;
+        long startOffset = endOffset().offset();
         epochStartOffsets.removeIf(epochStartOffset ->
             epochStartOffset.startOffset >= startOffset || epochStartOffset.epoch >= epoch);
         epochStartOffsets.add(new EpochStartOffset(epoch, startOffset));
@@ -457,7 +491,7 @@ public class MockLog implements ReplicatedLog {
             return Optional.empty();
         }
 
-        long highWatermarkOffset = highWatermark().offset;
+        long highWatermarkOffset = highWatermark().offset();
         if (snapshotId.offset() > highWatermarkOffset) {
             throw new IllegalArgumentException(
                 String.format(
@@ -479,18 +513,30 @@ public class MockLog implements ReplicatedLog {
             );
         }
 
-        return storeSnapshot(snapshotId);
+        long baseOffset = read(snapshotId.offset(), Isolation.COMMITTED).startOffsetMetadata.offset();
+        if (snapshotId.offset() != baseOffset) {
+            throw new IllegalArgumentException(
+                String.format(
+                    "Cannot create snapshot at offset (%s) because it is not batch aligned. " +
+                    "The batch containing the requested offset has a base offset of (%s)",
+                    snapshotId.offset(),
+                    baseOffset
+                )
+            );
+        }
+
+        return createNewSnapshotUnchecked(snapshotId);
     }
 
     @Override
-    public Optional<RawSnapshotWriter> storeSnapshot(OffsetAndEpoch snapshotId) {
+    public Optional<RawSnapshotWriter> createNewSnapshotUnchecked(OffsetAndEpoch snapshotId) {
         if (snapshots.containsKey(snapshotId)) {
             return Optional.empty();
         } else {
             return Optional.of(
-                new MockRawSnapshotWriter(snapshotId, buffer -> {
-                    snapshots.putIfAbsent(snapshotId, new MockRawSnapshotReader(snapshotId, buffer));
-                })
+                new MockRawSnapshotWriter(snapshotId, buffer ->
+                    snapshots.putIfAbsent(snapshotId, new MockRawSnapshotReader(snapshotId, buffer))
+                )
             );
         }
     }
@@ -525,18 +571,18 @@ public class MockLog implements ReplicatedLog {
         if (startOffset() > snapshotId.offset()) {
             throw new OffsetOutOfRangeException(
                 String.format(
-                    "New log start (%s) is less than the curent log start offset (%s)",
+                    "New log start (%s) is less than the current log start offset (%s)",
                     snapshotId,
                     startOffset()
                 )
             );
         }
-        if (highWatermark.offset < snapshotId.offset()) {
+        if (highWatermark.offset() < snapshotId.offset()) {
             throw new OffsetOutOfRangeException(
                 String.format(
                     "New log start (%s) is greater than the high watermark (%s)",
                     snapshotId,
-                    highWatermark.offset
+                    highWatermark.offset()
                 )
             );
         }
@@ -545,6 +591,7 @@ public class MockLog implements ReplicatedLog {
         if (snapshots.containsKey(snapshotId)) {
             snapshots.headMap(snapshotId, false).clear();
 
+            logger.debug("Deleting batches included in the snapshot {}", snapshotId);
             batches.removeIf(entry -> entry.lastOffset() < snapshotId.offset());
 
             AtomicReference<Optional<EpochStartOffset>> last = new AtomicReference<>(Optional.empty());
@@ -557,12 +604,10 @@ public class MockLog implements ReplicatedLog {
                 return false;
             });
 
-            last.get().ifPresent(epochStartOffset -> {
-                epochStartOffsets.add(
-                    0,
-                    new EpochStartOffset(epochStartOffset.epoch, snapshotId.offset())
-                );
-            });
+            last.get().ifPresent(epochStartOffset ->
+                epochStartOffsets.add(0, new EpochStartOffset(epochStartOffset.epoch, snapshotId.offset())
+                )
+            );
 
             updated = true;
         }
@@ -570,86 +615,31 @@ public class MockLog implements ReplicatedLog {
         return updated;
     }
 
-    static class MockOffsetMetadata implements OffsetMetadata {
-        final long id;
-
-        MockOffsetMetadata(long id) {
-            this.id = id;
-        }
-
-        @Override
-        public String toString() {
-            return "MockOffsetMetadata(" +
-                "id=" + id +
-                ')';
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) return true;
-            if (o == null || getClass() != o.getClass()) return false;
-            MockOffsetMetadata that = (MockOffsetMetadata) o;
-            return id == that.id;
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(id);
-        }
+    @Override
+    public String toString() {
+        return String.format(
+            "MockLog(epochStartOffsets=%s, batches=%s, snapshots=%s, highWatermark=%s",
+            epochStartOffsets,
+            batches,
+            snapshots,
+            highWatermark
+        );
     }
 
-    static class LogEntry {
-        final MockOffsetMetadata metadata;
-        final long offset;
-        final SimpleRecord record;
+    record MockOffsetMetadata(long id) implements OffsetMetadata {
+    }
 
-        LogEntry(MockOffsetMetadata metadata, long offset, SimpleRecord record) {
-            this.metadata = metadata;
-            this.offset = offset;
-            this.record = record;
-        }
+    record LogEntry(MockOffsetMetadata metadata, long offset, SimpleRecord record) {
 
         LogOffsetMetadata logOffsetMetadata() {
             return new LogOffsetMetadata(offset, Optional.of(metadata));
         }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) return true;
-            if (o == null || getClass() != o.getClass()) return false;
-            LogEntry logEntry = (LogEntry) o;
-            return offset == logEntry.offset &&
-                Objects.equals(metadata, logEntry.metadata) &&
-                Objects.equals(record, logEntry.record);
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(metadata, offset, record);
-        }
-
-        @Override
-        public String toString() {
-            return String.format(
-                "LogEntry(metadata=%s, offset=%s, record=%s)",
-                metadata,
-                offset,
-                record
-            );
-        }
     }
 
-    static class LogBatch {
-        final List<LogEntry> entries;
-        final int epoch;
-        final boolean isControlBatch;
-
-        LogBatch(int epoch, boolean isControlBatch, List<LogEntry> entries) {
+    record LogBatch(int epoch, boolean isControlBatch, List<LogEntry> entries) {
+        LogBatch {
             if (entries.isEmpty())
                 throw new IllegalArgumentException("Empty batches are not supported");
-            this.entries = entries;
-            this.epoch = epoch;
-            this.isControlBatch = isControlBatch;
         }
 
         long firstOffset() {
@@ -672,7 +662,7 @@ public class MockLog implements ReplicatedLog {
             LogEntry first = first();
 
             MemoryRecordsBuilder builder = MemoryRecords.builder(
-                buffer, RecordBatch.CURRENT_MAGIC_VALUE, CompressionType.NONE,
+                buffer, RecordBatch.CURRENT_MAGIC_VALUE, Compression.NONE,
                 TimestampType.CREATE_TIME, first.offset, first.record.timestamp(),
                 RecordBatch.NO_PRODUCER_ID, RecordBatch.NO_PRODUCER_EPOCH,
                 RecordBatch.NO_SEQUENCE, false,
@@ -689,25 +679,8 @@ public class MockLog implements ReplicatedLog {
             builder.close();
             return builder.buffer();
         }
-
-        @Override
-        public String toString() {
-            return String.format("LogBatch(entries=%s, epoch=%s, isControlBatch=%s)", entries, epoch, isControlBatch);
-        }
     }
 
-    private static class EpochStartOffset {
-        final int epoch;
-        final long startOffset;
-
-        private EpochStartOffset(int epoch, long startOffset) {
-            this.epoch = epoch;
-            this.startOffset = startOffset;
-        }
-
-        @Override
-        public String toString() {
-            return String.format("EpochStartOffset(epoch=%s, startOffset=%s)", epoch, startOffset);
-        }
+    private record EpochStartOffset(int epoch, long startOffset) {
     }
 }

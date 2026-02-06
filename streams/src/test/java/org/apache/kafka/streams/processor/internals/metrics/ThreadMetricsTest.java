@@ -19,31 +19,31 @@ package org.apache.kafka.streams.processor.internals.metrics;
 import org.apache.kafka.common.metrics.Gauge;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.metrics.Sensor.RecordingLevel;
+import org.apache.kafka.streams.processor.internals.StreamThread;
 import org.apache.kafka.streams.processor.internals.StreamThreadTotalBlockedTime;
-import org.junit.Test;
 
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.mockito.MockedStatic;
+
+import java.util.Collections;
+import java.util.Map;
+
+import static org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl.LATENCY_SUFFIX;
+import static org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl.RATE_SUFFIX;
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import java.util.Collections;
-import java.util.Map;
-import org.mockito.ArgumentCaptor;
-import org.mockito.MockedStatic;
-
-import static org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl.LATENCY_SUFFIX;
-import static org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl.RATE_SUFFIX;
-import static org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl.ROLLUP_VALUE;
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.MatcherAssert.assertThat;
-
 public class ThreadMetricsTest {
 
+    private static final String PROCESS_ID = "process-id";
     private static final String THREAD_ID = "thread-id";
     private static final String THREAD_LEVEL_GROUP = "stream-thread-metrics";
-    private static final String TASK_LEVEL_GROUP = "stream-task-metrics";
 
     private final Sensor expectedSensor = mock(Sensor.class);
     private final StreamsMetricsImpl streamsMetrics = mock(StreamsMetricsImpl.class);
@@ -53,7 +53,8 @@ public class ThreadMetricsTest {
     @Test
     public void shouldGetProcessRatioSensor() {
         final String operation = "process-ratio";
-        final String ratioDescription = "The fraction of time the thread spent on processing active tasks";
+        final String ratioDescription = "The ratio, over a rolling measurement window, of the time this thread spent " +
+            "processing active tasks to the total elapsed time in that window.";
         when(streamsMetrics.threadLevelSensor(THREAD_ID, operation, RecordingLevel.INFO)).thenReturn(expectedSensor);
         when(streamsMetrics.threadLevelTagMap(THREAD_ID)).thenReturn(tagMap);
 
@@ -148,7 +149,8 @@ public class ThreadMetricsTest {
     @Test
     public void shouldGetPollRatioSensor() {
         final String operation = "poll-ratio";
-        final String ratioDescription = "The fraction of time the thread spent on polling records from consumer";
+        final String ratioDescription = "The ratio, over a rolling measurement window, of the time this thread " +
+            "spent polling records from the consumer to the total elapsed time in that window.";
         when(streamsMetrics.threadLevelSensor(THREAD_ID, operation, RecordingLevel.INFO)).thenReturn(expectedSensor);
         when(streamsMetrics.threadLevelTagMap(THREAD_ID)).thenReturn(tagMap);
 
@@ -268,7 +270,8 @@ public class ThreadMetricsTest {
     @Test
     public void shouldGetCommitRatioSensor() {
         final String operation = "commit-ratio";
-        final String ratioDescription = "The fraction of time the thread spent on committing all tasks";
+        final String ratioDescription = "The ratio, over a rolling measurement window, of the time this thread spent " +
+            "committing all tasks to the total elapsed time in that window.";
         when(streamsMetrics.threadLevelSensor(THREAD_ID, operation, RecordingLevel.INFO)).thenReturn(expectedSensor);
         when(streamsMetrics.threadLevelTagMap(THREAD_ID)).thenReturn(tagMap);
 
@@ -281,32 +284,6 @@ public class ThreadMetricsTest {
                     tagMap,
                     operation,
                     ratioDescription
-                )
-            );
-            assertThat(sensor, is(expectedSensor));
-        }
-    }
-
-    @Test
-    public void shouldGetCommitOverTasksSensor() {
-        final String operation = "commit";
-        final String totalDescription =
-            "The total number of calls to commit over all tasks assigned to one stream thread";
-        final String rateDescription =
-            "The average per-second number of calls to commit over all tasks assigned to one stream thread";
-        when(streamsMetrics.threadLevelSensor(THREAD_ID, operation, RecordingLevel.DEBUG)).thenReturn(expectedSensor);
-        when(streamsMetrics.taskLevelTagMap(THREAD_ID, ROLLUP_VALUE)).thenReturn(tagMap);
-
-        try (final MockedStatic<StreamsMetricsImpl> streamsMetricsStaticMock = mockStatic(StreamsMetricsImpl.class)) {
-            final Sensor sensor = ThreadMetrics.commitOverTasksSensor(THREAD_ID, streamsMetrics);
-            streamsMetricsStaticMock.verify(
-                () -> StreamsMetricsImpl.addInvocationRateAndCountToSensor(
-                    expectedSensor,
-                    TASK_LEVEL_GROUP,
-                    tagMap,
-                    operation,
-                    rateDescription,
-                    totalDescription
                 )
             );
             assertThat(sensor, is(expectedSensor));
@@ -353,7 +330,8 @@ public class ThreadMetricsTest {
     @Test
     public void shouldGetPunctuateRatioSensor() {
         final String operation = "punctuate-ratio";
-        final String ratioDescription = "The fraction of time the thread spent on punctuating active tasks";
+        final String ratioDescription = "The ratio, over a rolling measurement window, of the time this thread spent " +
+            "punctuating active tasks to the total elapsed time in that window.";
         when(streamsMetrics.threadLevelSensor(THREAD_ID, operation, RecordingLevel.INFO)).thenReturn(expectedSensor);
         when(streamsMetrics.threadLevelTagMap(THREAD_ID)).thenReturn(tagMap);
 
@@ -371,6 +349,8 @@ public class ThreadMetricsTest {
             assertThat(sensor, is(expectedSensor));
         }
     }
+
+    @Test
     public void shouldGetCreateTaskSensor() {
         final String operation = "task-created";
         final String totalDescription = "The total number of newly created tasks";
@@ -438,6 +418,41 @@ public class ThreadMetricsTest {
             startTime
         );
     }
+
+    @Test
+    public void shouldAddThreadStateTelemetryMetric() {
+        final Gauge<Integer> threadStateProvider = (streamsMetrics, startTime) -> StreamThread.State.RUNNING.ordinal();
+        ThreadMetrics.addThreadStateTelemetryMetric(
+                PROCESS_ID,
+                THREAD_ID,
+                streamsMetrics,
+                threadStateProvider
+        );
+        verify(streamsMetrics).addThreadLevelMutableMetric(
+                "thread-state",
+                "The current state of the thread",
+                THREAD_ID,
+                Collections.singletonMap("process-id", PROCESS_ID),
+                threadStateProvider
+        );
+    }
+
+    @Test
+    public void shouldAddThreadStateJmxMetric() {
+        final Gauge<String> threadStateProvider = (streamsMetrics, startTime) -> StreamThread.State.RUNNING.name();
+        ThreadMetrics.addThreadStateMetric(
+                THREAD_ID,
+                streamsMetrics,
+                threadStateProvider
+        );
+        verify(streamsMetrics).addThreadLevelMutableMetric(
+                "state",
+                "The current state of the thread",
+                THREAD_ID,
+                threadStateProvider
+        );
+    }
+    
 
     @Test
     public void shouldAddTotalBlockedTimeMetric() {

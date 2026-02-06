@@ -19,15 +19,20 @@ package org.apache.kafka.streams.internals.metrics;
 import org.apache.kafka.common.metrics.Gauge;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.metrics.Sensor.RecordingLevel;
-import org.apache.kafka.streams.KafkaStreams.State;
 import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.InputStream;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Properties;
 
+import static org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl.APPLICATION_ID_TAG;
 import static org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl.CLIENT_LEVEL_GROUP;
+import static org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl.PROCESS_ID_TAG;
 import static org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl.addSumMetricToSensor;
 
 public class ClientMetrics {
@@ -39,11 +44,14 @@ public class ClientMetrics {
     private static final String APPLICATION_ID = "application-id";
     private static final String TOPOLOGY_DESCRIPTION = "topology-description";
     private static final String STATE = "state";
+    private static final String CLIENT_STATE = "client-state";
     private static final String ALIVE_STREAM_THREADS = "alive-stream-threads";
     private static final String VERSION_FROM_FILE;
     private static final String COMMIT_ID_FROM_FILE;
     private static final String DEFAULT_VALUE = "unknown";
     private static final String FAILED_STREAM_THREADS = "failed-stream-threads";
+    private static final String RECORDING_LEVEL = "recording-level";
+    
 
     static {
         final Properties props = new Properties();
@@ -66,6 +74,7 @@ public class ClientMetrics {
     private static final String STATE_DESCRIPTION = "The state of the Kafka Streams client";
     private static final String ALIVE_STREAM_THREADS_DESCRIPTION = "The current number of alive stream threads that are running or participating in rebalance";
     private static final String FAILED_STREAM_THREADS_DESCRIPTION = "The number of failed stream threads since the start of the Kafka Streams client";
+    private static final String RECORDING_LEVEL_DESCRIPTION = "The metrics recording level of the Kafka Streams client";
 
     public static String version() {
         return VERSION_FROM_FILE;
@@ -113,12 +122,41 @@ public class ClientMetrics {
     }
 
     public static void addStateMetric(final StreamsMetricsImpl streamsMetrics,
-                                      final Gauge<State> stateProvider) {
+                                      final Gauge<String> stateProvider) {
         streamsMetrics.addClientLevelMutableMetric(
             STATE,
             STATE_DESCRIPTION,
             RecordingLevel.INFO,
             stateProvider
+        );
+    }
+
+    public static void addClientStateTelemetryMetric(final String processId,
+                                                     final String applicationId,
+                                                     final StreamsMetricsImpl streamsMetrics,
+                                                     final Gauge<Integer> stateProvider) {
+        final Map<String, String> additionalTags = new LinkedHashMap<>();
+        additionalTags.put(PROCESS_ID_TAG, processId);
+        additionalTags.put(APPLICATION_ID_TAG, applicationId);
+
+        streamsMetrics.addClientLevelMutableMetric(
+            CLIENT_STATE,
+            STATE_DESCRIPTION,
+            additionalTags,
+            RecordingLevel.INFO,
+            stateProvider
+        );
+    }
+
+    public static void addClientRecordingLevelMetric(final String processId,
+                                                     final StreamsMetricsImpl streamsMetrics,
+                                                     final int recordingLevel) {
+        streamsMetrics.addClientLevelImmutableMetric(
+                RECORDING_LEVEL,
+                RECORDING_LEVEL_DESCRIPTION,
+                Collections.singletonMap(PROCESS_ID_TAG, processId),
+                RecordingLevel.INFO,
+                recordingLevel
         );
     }
 

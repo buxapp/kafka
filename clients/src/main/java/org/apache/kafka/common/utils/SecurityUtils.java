@@ -20,8 +20,9 @@ import org.apache.kafka.common.acl.AclOperation;
 import org.apache.kafka.common.acl.AclPermissionType;
 import org.apache.kafka.common.config.SecurityConfig;
 import org.apache.kafka.common.resource.ResourceType;
-import org.apache.kafka.common.security.auth.SecurityProviderCreator;
 import org.apache.kafka.common.security.auth.KafkaPrincipal;
+import org.apache.kafka.common.security.auth.SecurityProviderCreator;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,7 +33,7 @@ import java.util.Map;
 
 public class SecurityUtils {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(SecurityConfig.class);
+    private static final Logger LOGGER = LoggerFactory.getLogger(SecurityUtils.class);
 
     private static final Map<String, ResourceType> NAME_TO_RESOURCE_TYPES;
     private static final Map<String, AclOperation> NAME_TO_OPERATIONS;
@@ -76,7 +77,7 @@ public class SecurityUtils {
 
     public static void addConfiguredSecurityProviders(Map<String, ?> configs) {
         String securityProviderClassesStr = (String) configs.get(SecurityConfig.SECURITY_PROVIDERS_CONFIG);
-        if (securityProviderClassesStr == null || securityProviderClassesStr.equals("")) {
+        if (securityProviderClassesStr == null || securityProviderClassesStr.isEmpty()) {
             return;
         }
         try {

@@ -170,17 +170,17 @@ public class RangeAssignor extends AbstractPartitionAssignor {
     private void assignWithRackMatching(Collection<TopicAssignmentState> assignmentStates,
                                         Map<String, List<TopicPartition>> assignment) {
 
-        assignmentStates.stream().collect(Collectors.groupingBy(t -> t.consumers)).forEach((consumers, states) -> {
+        assignmentStates.stream().collect(Collectors.groupingBy(t -> t.consumers)).forEach((consumers, states) ->
             states.stream().collect(Collectors.groupingBy(t -> t.partitionRacks.size())).forEach((numPartitions, coPartitionedStates) -> {
                 if (coPartitionedStates.size() > 1)
-                    assignCoPartitionedWithRackMatching(consumers, numPartitions, states, assignment);
+                    assignCoPartitionedWithRackMatching(consumers, numPartitions, coPartitionedStates, assignment);
                 else {
                     TopicAssignmentState state = coPartitionedStates.get(0);
                     if (state.needsRackAwareAssignment)
                         assignRanges(state, state::racksMatch, assignment);
                 }
-            });
-        });
+            })
+        );
     }
 
     private void assignCoPartitionedWithRackMatching(LinkedHashMap<String, Optional<String>> consumers,
@@ -269,7 +269,7 @@ public class RangeAssignor extends AbstractPartitionAssignor {
         boolean racksMatch(String consumer, TopicPartition tp) {
             Optional<String> consumerRack = consumers.get(consumer);
             Set<String> replicaRacks = partitionRacks.get(tp);
-            return !consumerRack.isPresent() || (replicaRacks != null && replicaRacks.contains(consumerRack.get()));
+            return consumerRack.isEmpty() || (replicaRacks != null && replicaRacks.contains(consumerRack.get()));
         }
 
         int maxAssignable(String consumer) {

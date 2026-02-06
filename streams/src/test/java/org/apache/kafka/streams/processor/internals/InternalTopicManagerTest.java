@@ -47,19 +47,21 @@ import org.apache.kafka.common.message.CreateTopicsRequestData.CreatableReplicaA
 import org.apache.kafka.common.message.CreateTopicsRequestData.CreatableTopic;
 import org.apache.kafka.common.message.CreateTopicsRequestData.CreatableTopicCollection;
 import org.apache.kafka.common.requests.CreateTopicsRequest;
+import org.apache.kafka.common.utils.LogCaptureAppender;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.errors.StreamsException;
 import org.apache.kafka.streams.processor.internals.InternalTopicManager.ValidationResult;
-import org.apache.kafka.common.utils.LogCaptureAppender;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.mockito.junit.MockitoJUnitRunner;
 
-import java.util.Arrays;
-import java.util.ArrayList;
+import org.apache.logging.log4j.Level;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
+
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -69,35 +71,31 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
+
 import static org.apache.kafka.common.utils.Utils.mkEntry;
 import static org.apache.kafka.common.utils.Utils.mkMap;
-import static org.apache.kafka.common.utils.Utils.mkSet;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.anEmptyMap;
-import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.empty;
+import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.hasKey;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertThrows;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 
-@RunWith(MockitoJUnitRunner.StrictStubs.class)
+@ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.STRICT_STUBS)
 public class InternalTopicManagerTest {
     private final Node broker1 = new Node(0, "dummyHost-1", 1234);
     private final Node broker2 = new Node(1, "dummyHost-2", 1234);
-    private final List<Node> cluster = new ArrayList<Node>(2) {
-        {
-            add(broker1);
-            add(broker2);
-        }
-    };
+    private final List<Node> cluster = List.of(broker1, broker2);
     private final String topic1 = "test_topic";
     private final String topic2 = "test_topic_2";
     private final String topic3 = "test_topic_3";
@@ -111,18 +109,16 @@ public class InternalTopicManagerTest {
     private InternalTopicManager internalTopicManager;
     private final MockTime time = new MockTime(0);
 
-    private final Map<String, Object> config = new HashMap<String, Object>() {
-        {
-            put(StreamsConfig.APPLICATION_ID_CONFIG, "app-id");
-            put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, broker1.host() + ":" + broker1.port());
-            put(StreamsConfig.REPLICATION_FACTOR_CONFIG, 1);
-            put(StreamsConfig.producerPrefix(ProducerConfig.BATCH_SIZE_CONFIG), 16384);
-            put(StreamsConfig.consumerPrefix(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG), 100);
-            put(StreamsConfig.RETRY_BACKOFF_MS_CONFIG, 10);
-        }
-    };
+    private final Map<String, Object> config = Map.of(
+        StreamsConfig.APPLICATION_ID_CONFIG, "app-id",
+        StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, broker1.host() + ":" + broker1.port(),
+        StreamsConfig.REPLICATION_FACTOR_CONFIG, 1,
+        StreamsConfig.producerPrefix(ProducerConfig.BATCH_SIZE_CONFIG), 16384,
+        StreamsConfig.consumerPrefix(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG), 100,
+        StreamsConfig.RETRY_BACKOFF_MS_CONFIG, 10
+    );
 
-    @Before
+    @BeforeEach
     public void init() {
         threadName = Thread.currentThread().getName();
 
@@ -134,7 +130,7 @@ public class InternalTopicManagerTest {
         );
     }
 
-    @After
+    @AfterEach
     public void shutdown() {
         mockAdminClient.close();
     }
@@ -179,12 +175,12 @@ public class InternalTopicManagerTest {
         final InternalTopicConfig internalTopicConfig2 = setupRepartitionTopicConfig(topic2, 1);
         final NewTopic newTopic1 = newTopic(topic1, internalTopicConfig1, streamsConfig);
         final NewTopic newTopic2 = newTopic(topic2, internalTopicConfig2, streamsConfig);
-        when(admin.createTopics(mkSet(newTopic1, newTopic2)))
+        when(admin.createTopics(Set.of(newTopic1, newTopic2)))
             .thenAnswer(answer -> new MockCreateTopicsResult(mkMap(
                 mkEntry(topic1, createTopicSuccessfulFuture),
                 mkEntry(topic2, createTopicFailFuture)
             )));
-        when(admin.createTopics(mkSet(newTopic2)))
+        when(admin.createTopics(Set.of(newTopic2)))
             .thenAnswer(answer -> new MockCreateTopicsResult(mkMap(
                 mkEntry(topic2, createTopicSuccessfulFuture)
             )));
@@ -217,7 +213,7 @@ public class InternalTopicManagerTest {
         );
         final InternalTopicConfig internalTopicConfig = setupRepartitionTopicConfig(topic1, 1);
         final NewTopic newTopic = newTopic(topic1, internalTopicConfig, streamsConfig);
-        when(admin.createTopics(mkSet(newTopic)))
+        when(admin.createTopics(Set.of(newTopic)))
             .thenAnswer(answer -> new MockCreateTopicsResult(mkMap(
                 mkEntry(topic1, createTopicSuccessfulFuture)
             )))
@@ -280,7 +276,27 @@ public class InternalTopicManagerTest {
     }
 
     @Test
-    public void shouldThrowTimeoutExceptionIfTopicExistsDuringSetup() {
+    public void shouldThrowTimeoutExceptionInGetPartitionInfo() {
+        setupTopicInMockAdminClient(topic1, Collections.emptyMap());
+        final MockTime time = new MockTime(5);
+        mockAdminClient.timeoutNextRequest(Integer.MAX_VALUE);
+
+        final InternalTopicManager internalTopicManager =
+            new InternalTopicManager(time, mockAdminClient, new StreamsConfig(config));
+
+        final TimeoutException exception = assertThrows(
+            TimeoutException.class,
+            () -> internalTopicManager.getTopicPartitionInfo(Collections.singleton(topic1))
+        );
+
+        assertThat(
+            exception.getMessage(),
+            is("Could not create topics within 50 milliseconds. This can happen if the Kafka cluster is temporarily not available.")
+        );
+    }
+
+    @Test
+    public void shouldThrowSetupTimeoutExceptionIfTopicExistsDuringSetup() {
         setupTopicInMockAdminClient(topic1, Collections.emptyMap());
         final MockTime time = new MockTime(
             (Integer) config.get(StreamsConfig.consumerPrefix(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG)) / 15
@@ -296,7 +312,7 @@ public class InternalTopicManagerTest {
 
         assertThat(
             exception.getMessage(),
-            is("Could not create internal topics within " +
+            is("Setup timeout: Could not create internal topics within " +
                     (Integer) config.get(StreamsConfig.consumerPrefix(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG)) / 2 +
                 " milliseconds. This can happen if the Kafka cluster is temporarily not available or a topic is marked" +
                     " for deletion and the broker did not complete its deletion within the timeout." +
@@ -306,14 +322,39 @@ public class InternalTopicManagerTest {
     }
 
     @Test
+    public void shouldThrowTimeoutExceptionIfGetPartitionInfoHasTopicDescriptionTimeout() {
+        mockAdminClient.timeoutNextRequest(1);
+
+        final InternalTopicManager internalTopicManager =
+                new InternalTopicManager(time, mockAdminClient, new StreamsConfig(config));
+        try {
+            final Set<String> topic1set = Set.of(topic1);
+            internalTopicManager.getTopicPartitionInfo(topic1set, null);
+
+        } catch (final TimeoutException expected) {
+            assertEquals(TimeoutException.class, expected.getCause().getClass());
+        }
+
+        mockAdminClient.timeoutNextRequest(1);
+
+        try {
+            final Set<String> topic2set = Set.of(topic2);
+            internalTopicManager.getTopicPartitionInfo(topic2set, null);
+
+        } catch (final TimeoutException expected) {
+            assertEquals(TimeoutException.class, expected.getCause().getClass());
+        }
+    }
+
+    @Test
     public void shouldThrowTimeoutExceptionIfGetNumPartitionsHasTopicDescriptionTimeout() {
         mockAdminClient.timeoutNextRequest(1);
 
         final InternalTopicManager internalTopicManager =
                 new InternalTopicManager(time, mockAdminClient, new StreamsConfig(config));
         try {
-            final Set<String> topic1set = new HashSet<String>(Arrays.asList(topic1));
-            final Set<String> topic2set = new HashSet<String>(Arrays.asList(topic2));
+            final Set<String> topic1set = Set.of(topic1);
+            final Set<String> topic2set = new HashSet<>(Collections.singletonList(topic2));
 
             internalTopicManager.getNumPartitions(topic1set, topic2set);
 
@@ -324,8 +365,8 @@ public class InternalTopicManagerTest {
         mockAdminClient.timeoutNextRequest(1);
 
         try {
-            final Set<String> topic1set = new HashSet<String>(Arrays.asList(topic1));
-            final Set<String> topic2set = new HashSet<String>(Arrays.asList(topic2));
+            final Set<String> topic1set = Set.of(topic1);
+            final Set<String> topic2set = new HashSet<>(Collections.singletonList(topic2));
 
             internalTopicManager.getNumPartitions(topic1set, topic2set);
 
@@ -343,7 +384,7 @@ public class InternalTopicManagerTest {
         final KafkaFutureImpl<TopicMetadataAndConfig> createTopicFailFuture = new KafkaFutureImpl<>();
         createTopicFailFuture.completeExceptionally(new IllegalStateException("Nobody expects the Spanish inquisition"));
         final NewTopic newTopic = newTopic(topic1, internalTopicConfig, streamsConfig);
-        when(admin.createTopics(mkSet(newTopic)))
+        when(admin.createTopics(Set.of(newTopic)))
             .thenAnswer(answer -> new MockCreateTopicsResult(mkMap(
                 mkEntry(topic1, createTopicFailFuture)
             )));
@@ -360,7 +401,7 @@ public class InternalTopicManagerTest {
         final InternalTopicManager topicManager = new InternalTopicManager(time, admin, streamsConfig);
         final InternalTopicConfig internalTopicConfig = setupRepartitionTopicConfig(topic1, 1);
         final NewTopic newTopic = newTopic(topic1, internalTopicConfig, streamsConfig);
-        when(admin.createTopics(mkSet(newTopic)))
+        when(admin.createTopics(Set.of(newTopic)))
             .thenAnswer(answer -> new MockCreateTopicsResult(Collections.singletonMap(topic2, new KafkaFutureImpl<>())));
 
         assertThrows(
@@ -381,7 +422,7 @@ public class InternalTopicManagerTest {
         createTopicFailFuture.completeExceptionally(new TimeoutException());
         final InternalTopicConfig internalTopicConfig = setupRepartitionTopicConfig(topic1, 1);
         final NewTopic newTopic = newTopic(topic1, internalTopicConfig, streamsConfig);
-        when(admin.createTopics(mkSet(newTopic)))
+        when(admin.createTopics(Set.of(newTopic)))
             .thenAnswer(answer -> new MockCreateTopicsResult(mkMap(mkEntry(topic1, createTopicFailFuture))));
 
         assertThrows(
@@ -401,7 +442,7 @@ public class InternalTopicManagerTest {
         final KafkaFutureImpl<TopicMetadataAndConfig> createTopicFutureThatNeverCompletes = new KafkaFutureImpl<>();
         final InternalTopicConfig internalTopicConfig = setupRepartitionTopicConfig(topic1, 1);
         final NewTopic newTopic = newTopic(topic1, internalTopicConfig, streamsConfig);
-        when(admin.createTopics(mkSet(newTopic)))
+        when(admin.createTopics(Set.of(newTopic)))
             .thenAnswer(answer -> new MockCreateTopicsResult(mkMap(mkEntry(topic1, createTopicFutureThatNeverCompletes))));
 
         assertThrows(
@@ -423,7 +464,7 @@ public class InternalTopicManagerTest {
         setupCleanUpScenario(admin, streamsConfig, internalTopicConfig1, internalTopicConfig2);
         final KafkaFutureImpl<Void> deleteTopicSuccessfulFuture = new KafkaFutureImpl<>();
         deleteTopicSuccessfulFuture.complete(null);
-        when(admin.deleteTopics(mkSet(topic1)))
+        when(admin.deleteTopics(Set.of(topic1)))
             .thenAnswer(answer -> new MockDeleteTopicsResult(mkMap(mkEntry(topic1, deleteTopicSuccessfulFuture))));
 
         assertThrows(
@@ -450,18 +491,18 @@ public class InternalTopicManagerTest {
         );
         final NewTopic newTopic1 = newTopic(topic1, internalTopicConfig1, streamsConfig);
         final NewTopic newTopic2 = newTopic(topic2, internalTopicConfig2, streamsConfig);
-        when(admin.createTopics(mkSet(newTopic1, newTopic2)))
+        when(admin.createTopics(Set.of(newTopic1, newTopic2)))
             .thenAnswer(answer -> new MockCreateTopicsResult(mkMap(
                 mkEntry(topic1, createTopicSuccessfulFuture),
                 mkEntry(topic2, createTopicFailFuture1)
             )));
-        when(admin.createTopics(mkSet(newTopic2)))
+        when(admin.createTopics(Set.of(newTopic2)))
             .thenAnswer(answer -> new MockCreateTopicsResult(mkMap(
                 mkEntry(topic3, createTopicSuccessfulFuture)
             )));
         final KafkaFutureImpl<Void> deleteTopicSuccessfulFuture = new KafkaFutureImpl<>();
         deleteTopicSuccessfulFuture.complete(null);
-        when(admin.deleteTopics(mkSet(topic1)))
+        when(admin.deleteTopics(Set.of(topic1)))
             .thenAnswer(answer -> new MockDeleteTopicsResult(mkMap(mkEntry(topic1, deleteTopicSuccessfulFuture))));
 
         assertThrows(
@@ -491,17 +532,17 @@ public class InternalTopicManagerTest {
         );
         final NewTopic newTopic1 = newTopic(topic1, internalTopicConfig1, streamsConfig);
         final NewTopic newTopic2 = newTopic(topic2, internalTopicConfig2, streamsConfig);
-        when(admin.createTopics(mkSet(newTopic1, newTopic2)))
+        when(admin.createTopics(Set.of(newTopic1, newTopic2)))
             .thenAnswer(answer -> new MockCreateTopicsResult(mkMap(
                 mkEntry(topic1, createTopicSuccessfulFuture),
                 mkEntry(topic2, createTopicFailFuture1)
             )));
         final KafkaFutureImpl<TopicMetadataAndConfig> createTopicFutureThatNeverCompletes = new KafkaFutureImpl<>();
-        when(admin.createTopics(mkSet(newTopic2)))
+        when(admin.createTopics(Set.of(newTopic2)))
             .thenAnswer(answer -> new MockCreateTopicsResult(mkMap(mkEntry(topic2, createTopicFutureThatNeverCompletes))));
         final KafkaFutureImpl<Void> deleteTopicSuccessfulFuture = new KafkaFutureImpl<>();
         deleteTopicSuccessfulFuture.complete(null);
-        when(admin.deleteTopics(mkSet(topic1)))
+        when(admin.deleteTopics(Set.of(topic1)))
             .thenAnswer(answer -> new MockDeleteTopicsResult(mkMap(mkEntry(topic1, deleteTopicSuccessfulFuture))));
 
         assertThrows(
@@ -539,7 +580,7 @@ public class InternalTopicManagerTest {
         deleteTopicFailFuture.completeExceptionally(retriableException);
         final KafkaFutureImpl<Void> deleteTopicSuccessfulFuture = new KafkaFutureImpl<>();
         deleteTopicSuccessfulFuture.complete(null);
-        when(admin.deleteTopics(mkSet(topic1)))
+        when(admin.deleteTopics(Set.of(topic1)))
             .thenAnswer(answer -> new MockDeleteTopicsResult(mkMap(mkEntry(topic1, deleteTopicFailFuture))))
             .thenAnswer(answer -> new MockDeleteTopicsResult(mkMap(mkEntry(topic1, deleteTopicSuccessfulFuture))));
 
@@ -564,7 +605,7 @@ public class InternalTopicManagerTest {
         final InternalTopicConfig internalTopicConfig2 = setupRepartitionTopicConfig(topic2, 1);
         setupCleanUpScenario(admin, streamsConfig, internalTopicConfig1, internalTopicConfig2);
         final KafkaFutureImpl<Void> deleteTopicFutureThatNeverCompletes = new KafkaFutureImpl<>();
-        when(admin.deleteTopics(mkSet(topic1)))
+        when(admin.deleteTopics(Set.of(topic1)))
             .thenAnswer(answer -> new MockDeleteTopicsResult(mkMap(mkEntry(topic1, deleteTopicFutureThatNeverCompletes))));
 
         assertThrows(
@@ -586,7 +627,7 @@ public class InternalTopicManagerTest {
         setupCleanUpScenario(admin, streamsConfig, internalTopicConfig1, internalTopicConfig2);
         final KafkaFutureImpl<Void> deleteTopicFailFuture = new KafkaFutureImpl<>();
         deleteTopicFailFuture.completeExceptionally(new IllegalStateException("Nobody expects the Spanish inquisition"));
-        when(admin.deleteTopics(mkSet(topic1)))
+        when(admin.deleteTopics(Set.of(topic1)))
             .thenAnswer(answer -> new MockDeleteTopicsResult(mkMap(mkEntry(topic1, deleteTopicFailFuture))));
 
         assertThrows(
@@ -609,12 +650,12 @@ public class InternalTopicManagerTest {
         );
         final NewTopic newTopic1 = newTopic(topic1, internalTopicConfig1, streamsConfig);
         final NewTopic newTopic2 = newTopic(topic2, internalTopicConfig2, streamsConfig);
-        when(admin.createTopics(mkSet(newTopic1, newTopic2)))
+        when(admin.createTopics(Set.of(newTopic1, newTopic2)))
             .thenAnswer(answer -> new MockCreateTopicsResult(mkMap(
                 mkEntry(topic1, createTopicSuccessfulFuture),
                 mkEntry(topic2, createTopicFailFuture1)
             )));
-        when(admin.createTopics(mkSet(newTopic2)))
+        when(admin.createTopics(Set.of(newTopic2)))
             .thenAnswer(answer -> new MockCreateTopicsResult(mkMap(
                 mkEntry(topic2, createTopicFailFuture2)
             )));
@@ -629,6 +670,19 @@ public class InternalTopicManagerTest {
             null);
         assertEquals(Collections.singletonMap(topic1, 1),
             internalTopicManager.getNumPartitions(Collections.singleton(topic1), Collections.emptySet()));
+    }
+
+    @Test
+    public void shouldReturnCorrectPartitionInfo() {
+        final TopicPartitionInfo topicPartitionInfo = new TopicPartitionInfo(0, broker1, singleReplica, Collections.emptyList());
+        mockAdminClient.addTopic(
+            false,
+            topic1,
+            Collections.singletonList(topicPartitionInfo),
+            null);
+
+        final Map<String, List<TopicPartitionInfo>> ret = internalTopicManager.getTopicPartitionInfo(Collections.singleton(topic1));
+        assertEquals(Collections.singletonMap(topic1, Collections.singletonList(topicPartitionInfo)), ret);
     }
 
     @Test
@@ -647,27 +701,39 @@ public class InternalTopicManagerTest {
         internalTopicManager.makeReady(Collections.singletonMap(topic3, topicConfig3));
         internalTopicManager.makeReady(Collections.singletonMap(topic4, topicConfig4));
 
-        assertEquals(mkSet(topic1, topic2, topic3, topic4), mockAdminClient.listTopics().names().get());
-        assertEquals(new TopicDescription(topic1, false, new ArrayList<TopicPartitionInfo>() {
-            {
-                add(new TopicPartitionInfo(0, broker1, singleReplica, Collections.emptyList()));
-            }
-        }), mockAdminClient.describeTopics(Collections.singleton(topic1)).topicNameValues().get(topic1).get());
-        assertEquals(new TopicDescription(topic2, false, new ArrayList<TopicPartitionInfo>() {
-            {
-                add(new TopicPartitionInfo(0, broker1, singleReplica, Collections.emptyList()));
-            }
-        }), mockAdminClient.describeTopics(Collections.singleton(topic2)).topicNameValues().get(topic2).get());
-        assertEquals(new TopicDescription(topic3, false, new ArrayList<TopicPartitionInfo>() {
-            {
-                add(new TopicPartitionInfo(0, broker1, singleReplica, Collections.emptyList()));
-            }
-        }), mockAdminClient.describeTopics(Collections.singleton(topic3)).topicNameValues().get(topic3).get());
-        assertEquals(new TopicDescription(topic4, false, new ArrayList<TopicPartitionInfo>() {
-            {
-                add(new TopicPartitionInfo(0, broker1, singleReplica, Collections.emptyList()));
-            }
-        }), mockAdminClient.describeTopics(Collections.singleton(topic4)).topicNameValues().get(topic4).get());
+        assertEquals(Set.of(topic1, topic2, topic3, topic4), mockAdminClient.listTopics().names().get());
+        assertEquals(
+            new TopicDescription(
+                topic1,
+                false,
+                List.of(new TopicPartitionInfo(0, broker1, singleReplica, Collections.emptyList(), Collections.emptyList(), Collections.emptyList()))
+            ),
+            mockAdminClient.describeTopics(Collections.singleton(topic1)).topicNameValues().get(topic1).get()
+        );
+        assertEquals(
+            new TopicDescription(
+                topic2,
+                false,
+                List.of(new TopicPartitionInfo(0, broker1, singleReplica, Collections.emptyList(), Collections.emptyList(), Collections.emptyList()))
+            ),
+            mockAdminClient.describeTopics(Collections.singleton(topic2)).topicNameValues().get(topic2).get()
+        );
+        assertEquals(
+            new TopicDescription(
+                topic3,
+                false,
+                List.of(new TopicPartitionInfo(0, broker1, singleReplica, Collections.emptyList(), Collections.emptyList(), Collections.emptyList()))
+            ),
+            mockAdminClient.describeTopics(Collections.singleton(topic3)).topicNameValues().get(topic3).get()
+        );
+        assertEquals(
+            new TopicDescription(
+                topic4,
+                false,
+                List.of(new TopicPartitionInfo(0, broker1, singleReplica, Collections.emptyList(), Collections.emptyList(), Collections.emptyList()))
+            ),
+            mockAdminClient.describeTopics(Collections.singleton(topic4)).topicNameValues().get(topic4).get()
+        );
 
         final ConfigResource resource = new ConfigResource(ConfigResource.Type.TOPIC, topic1);
         final ConfigResource resource2 = new ConfigResource(ConfigResource.Type.TOPIC, topic2);
@@ -715,17 +781,18 @@ public class InternalTopicManagerTest {
 
         // let the first describe succeed on topic, and fail on topic2, and then let creation throws topics-existed;
         // it should retry with just topic2 and then let it succeed
-        when(admin.describeTopics(mkSet(topic1, topic2)))
-            .thenAnswer(answer -> new MockDescribeTopicsResult(mkMap(
-                mkEntry(topic1, topicDescriptionSuccessFuture),
-                mkEntry(topic2, topicDescriptionFailFuture)
-            )));
+        when(admin.describeTopics(Set.of(topic1, topic2)))
+                .thenAnswer(answer -> new MockDescribeTopicsResult(mkMap(
+                        mkEntry(topic1, topicDescriptionSuccessFuture),
+                        mkEntry(topic2, topicDescriptionFailFuture) // first call: missing
+                )));
+
         when(admin.createTopics(Collections.singleton(new NewTopic(topic2, Optional.of(1), Optional.of((short) 1))
             .configs(mkMap(mkEntry(TopicConfig.CLEANUP_POLICY_CONFIG, TopicConfig.CLEANUP_POLICY_COMPACT),
                                  mkEntry(TopicConfig.MESSAGE_TIMESTAMP_TYPE_CONFIG, "CreateTime"))))))
             .thenAnswer(answer -> new MockCreateTopicsResult(Collections.singletonMap(topic2, topicCreationFuture)));
-        when(admin.describeTopics(Collections.singleton(topic2)))
-            .thenAnswer(answer -> new MockDescribeTopicsResult(Collections.singletonMap(topic2, topicDescriptionSuccessFuture)));
+        when(admin.describeTopics(Set.of(topic2)))
+                .thenAnswer(answer -> new MockDescribeTopicsResult(Collections.singletonMap(topic2, topicDescriptionSuccessFuture)));
 
         final InternalTopicConfig topicConfig = new UnwindowedUnversionedChangelogTopicConfig(topic1, Collections.emptyMap());
         topicConfig.setNumberOfPartitions(1);
@@ -742,13 +809,12 @@ public class InternalTopicManagerTest {
         mockAdminClient.addTopic(
             false,
             topic1,
-            new ArrayList<TopicPartitionInfo>() {
-                {
-                    add(new TopicPartitionInfo(0, broker1, singleReplica, Collections.emptyList()));
-                    add(new TopicPartitionInfo(1, broker1, singleReplica, Collections.emptyList()));
-                }
-            },
-            null);
+            List.of(
+                new TopicPartitionInfo(0, broker1, singleReplica, Collections.emptyList()),
+                new TopicPartitionInfo(1, broker1, singleReplica, Collections.emptyList())
+            ),
+            null
+        );
 
         try {
             final InternalTopicConfig internalTopicConfig = new RepartitionTopicConfig(topic1, Collections.emptyMap());
@@ -799,7 +865,7 @@ public class InternalTopicManagerTest {
             topicManager.makeReady(Collections.singletonMap(topic1, internalTopicConfig));
             fail("Should have thrown TimeoutException.");
         } catch (final TimeoutException expected) {
-            assertThat(expected.getMessage(), is("Could not create topics within 50 milliseconds. " +
+            assertThat(expected.getMessage(), is("MakeReady timeout: Could not create topics within 50 milliseconds. " +
                     "This can happen if the Kafka cluster is temporarily not available."));
         }
     }
@@ -822,8 +888,8 @@ public class InternalTopicManagerTest {
         topicConfigMap.put(topic1, internalTopicConfig);
         topicConfigMap.put("internal-topic", internalTopicConfigII);
 
-        LogCaptureAppender.setClassLoggerToDebug(InternalTopicManager.class);
         try (final LogCaptureAppender appender = LogCaptureAppender.createAndRegister(InternalTopicManager.class)) {
+            appender.setClassLogger(InternalTopicManager.class, Level.DEBUG);
             internalTopicManager.makeReady(topicConfigMap);
 
             assertThat(
@@ -930,7 +996,7 @@ public class InternalTopicManagerTest {
         assertNull(exception.getCause());
         assertThat(
             exception.getMessage(),
-            equalTo("Could not create topics within 50 milliseconds." +
+            equalTo("MakeReady timeout: Could not create topics within 50 milliseconds." +
                 " This can happen if the Kafka cluster is temporarily not available.")
         );
     }
@@ -959,7 +1025,7 @@ public class InternalTopicManagerTest {
         assertNull(exception.getCause());
         assertThat(
             exception.getMessage(),
-            equalTo("Could not create topics within 50 milliseconds." +
+            equalTo("MakeReady timeout: Could not create topics within 50 milliseconds." +
                 " This can happen if the Kafka cluster is temporarily not available.")
         );
     }
@@ -1427,12 +1493,12 @@ public class InternalTopicManagerTest {
             false,
             Collections.singletonList(new TopicPartitionInfo(0, broker1, cluster, Collections.emptyList()))
         ));
-        when(admin.describeTopics(mkSet(topic1, topic2)))
+        when(admin.describeTopics(Set.of(topic1, topic2)))
             .thenAnswer(answer -> new MockDescribeTopicsResult(mkMap(
                 mkEntry(topic1, topicDescriptionSuccessfulFuture1),
                 mkEntry(topic2, topicDescriptionFailFuture)
             )));
-        when(admin.describeTopics(mkSet(topic2)))
+        when(admin.describeTopics(Set.of(topic2)))
             .thenAnswer(answer -> new MockDescribeTopicsResult(mkMap(
                 mkEntry(topic2, topicDescriptionSuccessfulFuture2)
             )));
@@ -1443,7 +1509,7 @@ public class InternalTopicManagerTest {
         );
         final ConfigResource topicResource1 = new ConfigResource(Type.TOPIC, topic1);
         final ConfigResource topicResource2 = new ConfigResource(Type.TOPIC, topic2);
-        when(admin.describeConfigs(mkSet(topicResource1, topicResource2)))
+        when(admin.describeConfigs(Set.of(topicResource1, topicResource2)))
             .thenAnswer(answer -> new MockDescribeConfigsResult(mkMap(
                 mkEntry(topicResource1, topicConfigSuccessfulFuture),
                 mkEntry(topicResource2, topicConfigSuccessfulFuture)
@@ -1718,7 +1784,7 @@ public class InternalTopicManagerTest {
             topicName,
             topicConfig.numberOfPartitions(),
             Optional.of(streamsConfig.getInt(StreamsConfig.REPLICATION_FACTOR_CONFIG).shortValue())
-        ).configs(topicConfig.getProperties(
+        ).configs(topicConfig.properties(
             Collections.emptyMap(),
             streamsConfig.getLong(StreamsConfig.WINDOW_STORE_CHANGE_LOG_ADDITIONAL_RETENTION_MS_CONFIG))
         );

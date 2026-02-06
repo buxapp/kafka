@@ -23,28 +23,45 @@ import org.apache.kafka.streams.processor.api.Processor;
 import org.apache.kafka.streams.processor.api.ProcessorContext;
 import org.apache.kafka.streams.processor.api.Record;
 import org.apache.kafka.streams.processor.api.RecordMetadata;
+import org.apache.kafka.streams.processor.internals.StoreFactory;
+import org.apache.kafka.streams.processor.internals.StoreFactory.FactoryWrappingStoreBuilder;
 import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
+import org.apache.kafka.streams.state.StoreBuilder;
 import org.apache.kafka.streams.state.ValueAndTimestamp;
 import org.apache.kafka.streams.state.internals.KeyValueStoreWrapper;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Collections;
+import java.util.Set;
+
 import static org.apache.kafka.streams.processor.internals.metrics.TaskMetrics.droppedRecordsSensor;
 import static org.apache.kafka.streams.state.ValueAndTimestamp.getValueOrNull;
+import static org.apache.kafka.streams.state.VersionedKeyValueStore.PUT_RETURN_CODE_NOT_PUT;
+import static org.apache.kafka.streams.state.internals.KeyValueStoreWrapper.PUT_RETURN_CODE_IS_LATEST;
 
 public class KStreamReduce<K, V> implements KStreamAggProcessorSupplier<K, V, K, V> {
 
     private static final Logger LOG = LoggerFactory.getLogger(KStreamReduce.class);
 
     private final String storeName;
+    private final StoreFactory storeFactory;
     private final Reducer<V> reducer;
 
     private boolean sendOldValues = false;
 
-    KStreamReduce(final String storeName, final Reducer<V> reducer) {
-        this.storeName = storeName;
+    KStreamReduce(final StoreFactory storeFactory, final Reducer<V> reducer) {
+        this.storeFactory = storeFactory;
+        this.storeName = storeFactory.storeName();
         this.reducer = reducer;
     }
+
+    @Override
+    public Set<StoreBuilder<?>> stores() {
+        return Collections.singleton(new FactoryWrappingStoreBuilder<>(storeFactory));
+    }
+
 
     @Override
     public Processor<K, V, K, Change<V>> get() {
@@ -72,7 +89,7 @@ public class KStreamReduce<K, V> implements KStreamAggProcessorSupplier<K, V, K,
             );
             store = new KeyValueStoreWrapper<>(context, storeName);
             tupleForwarder = new TimestampedTupleForwarder<>(
-                store.getStore(),
+                store.store(),
                 context,
                 new TimestampedCacheFlushListener<>(context),
                 sendOldValues);
@@ -112,10 +129,13 @@ public class KStreamReduce<K, V> implements KStreamAggProcessorSupplier<K, V, K,
                 newTimestamp = Math.max(record.timestamp(), oldAggAndTimestamp.timestamp());
             }
 
-            store.put(record.key(), newAgg, newTimestamp);
-            tupleForwarder.maybeForward(
-                record.withValue(new Change<>(newAgg, sendOldValues ? oldAgg : null))
-                    .withTimestamp(newTimestamp));
+            final long putReturnCode = store.put(record.key(), newAgg, newTimestamp);
+            // if not put to store, do not forward downstream either
+            if (putReturnCode != PUT_RETURN_CODE_NOT_PUT) {
+                tupleForwarder.maybeForward(
+                    record.withValue(new Change<>(newAgg, sendOldValues ? oldAgg : null, putReturnCode == PUT_RETURN_CODE_IS_LATEST))
+                        .withTimestamp(newTimestamp));
+            }
         }
     }
 
@@ -147,6 +167,15 @@ public class KStreamReduce<K, V> implements KStreamAggProcessorSupplier<K, V, K,
         public ValueAndTimestamp<V> get(final K key) {
             return store.get(key);
         }
+
+        @Override
+        public ValueAndTimestamp<V> get(final K key, final long asOfTimestamp) {
+            return store.get(key, asOfTimestamp);
+        }
+
+        @Override
+        public boolean isVersioned() {
+            return store.isVersionedStore();
+        }
     }
 }
-

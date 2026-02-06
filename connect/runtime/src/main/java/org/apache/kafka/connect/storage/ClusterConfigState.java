@@ -18,12 +18,11 @@ package org.apache.kafka.connect.storage;
 
 import org.apache.kafka.common.config.provider.ConfigProvider;
 import org.apache.kafka.connect.runtime.SessionKey;
-import org.apache.kafka.connect.runtime.WorkerConfigTransformer;
 import org.apache.kafka.connect.runtime.TargetState;
+import org.apache.kafka.connect.runtime.WorkerConfigTransformer;
 import org.apache.kafka.connect.util.ConnectorTaskId;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -37,14 +36,15 @@ public class ClusterConfigState {
     public static final ClusterConfigState EMPTY = new ClusterConfigState(
             NO_OFFSET,
             null,
-            Collections.emptyMap(),
-            Collections.emptyMap(),
-            Collections.emptyMap(),
-            Collections.emptyMap(),
-            Collections.emptyMap(),
-            Collections.emptyMap(),
-            Collections.emptySet(),
-            Collections.emptySet());
+            Map.of(),
+            Map.of(),
+            Map.of(),
+            Map.of(),
+            Map.of(),
+            Map.of(),
+            Map.of(),
+            Set.of(),
+            Set.of());
 
     private final long offset;
     private final SessionKey sessionKey;
@@ -55,6 +55,7 @@ public class ClusterConfigState {
     final Map<ConnectorTaskId, Map<String, String>> taskConfigs;
     final Map<String, Integer> connectorTaskCountRecords;
     final Map<String, Integer> connectorTaskConfigGenerations;
+    final Map<String, AppliedConnectorConfig> appliedConnectorConfigs;
     final Set<String> connectorsPendingFencing;
     final Set<String> inconsistentConnectors;
 
@@ -66,6 +67,7 @@ public class ClusterConfigState {
                               Map<ConnectorTaskId, Map<String, String>> taskConfigs,
                               Map<String, Integer> connectorTaskCountRecords,
                               Map<String, Integer> connectorTaskConfigGenerations,
+                              Map<String, AppliedConnectorConfig> appliedConnectorConfigs,
                               Set<String> connectorsPendingFencing,
                               Set<String> inconsistentConnectors) {
         this(offset,
@@ -76,6 +78,7 @@ public class ClusterConfigState {
                 taskConfigs,
                 connectorTaskCountRecords,
                 connectorTaskConfigGenerations,
+                appliedConnectorConfigs,
                 connectorsPendingFencing,
                 inconsistentConnectors,
                 null);
@@ -89,6 +92,7 @@ public class ClusterConfigState {
                               Map<ConnectorTaskId, Map<String, String>> taskConfigs,
                               Map<String, Integer> connectorTaskCountRecords,
                               Map<String, Integer> connectorTaskConfigGenerations,
+                              Map<String, AppliedConnectorConfig> appliedConnectorConfigs,
                               Set<String> connectorsPendingFencing,
                               Set<String> inconsistentConnectors,
                               WorkerConfigTransformer configTransformer) {
@@ -100,6 +104,7 @@ public class ClusterConfigState {
         this.taskConfigs = taskConfigs;
         this.connectorTaskCountRecords = connectorTaskCountRecords;
         this.connectorTaskConfigGenerations = connectorTaskConfigGenerations;
+        this.appliedConnectorConfigs = appliedConnectorConfigs;
         this.connectorsPendingFencing = connectorsPendingFencing;
         this.inconsistentConnectors = inconsistentConnectors;
         this.configTransformer = configTransformer;
@@ -159,6 +164,19 @@ public class ClusterConfigState {
     }
 
     /**
+     * Get the most recent configuration for the connector from which task configs have
+     * been generated. The configuration will have been transformed by
+     * {@link org.apache.kafka.common.config.ConfigTransformer}
+     * @param connector name of the connector
+     * @return the connector config, or null if no config exists from which task configs have
+     * been generated
+     */
+    public Map<String, String> appliedConnectorConfig(String connector) {
+        AppliedConnectorConfig appliedConfig =  appliedConnectorConfigs.get(connector);
+        return appliedConfig != null ? appliedConfig.transformedConfig(configTransformer) : null;
+    }
+
+    /**
      * Get the target state of the connector
      * @param connector name of the connector
      * @return the target state
@@ -213,12 +231,12 @@ public class ClusterConfigState {
      */
     public List<ConnectorTaskId> tasks(String connectorName) {
         if (inconsistentConnectors.contains(connectorName)) {
-            return Collections.emptyList();
+            return List.of();
         }
 
         Integer numTasks = connectorTaskCounts.get(connectorName);
         if (numTasks == null) {
-            return Collections.emptyList();
+            return List.of();
         }
 
         List<ConnectorTaskId> taskIds = new ArrayList<>(numTasks);
@@ -226,7 +244,7 @@ public class ClusterConfigState {
             ConnectorTaskId taskId = new ConnectorTaskId(connectorName, taskIndex);
             taskIds.add(taskId);
         }
-        return Collections.unmodifiableList(taskIds);
+        return List.copyOf(taskIds);
     }
 
     /**
@@ -303,4 +321,5 @@ public class ClusterConfigState {
                 inconsistentConnectors,
                 configTransformer);
     }
+
 }

@@ -17,7 +17,7 @@
 
 package kafka.server
 
-import kafka.utils.{TestInfoUtils, TestUtils}
+import kafka.utils.TestUtils
 
 import java.util.{Collections, Properties}
 import java.util.stream.{Stream => JStream}
@@ -30,6 +30,7 @@ import org.apache.kafka.common.message.{FindCoordinatorRequestData, InitProducer
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
 import org.apache.kafka.common.requests.FindCoordinatorRequest.CoordinatorType
 import org.apache.kafka.common.requests.{AddPartitionsToTxnRequest, AddPartitionsToTxnResponse, FindCoordinatorRequest, FindCoordinatorResponse, InitProducerIdRequest, InitProducerIdResponse}
+import org.apache.kafka.server.config.ServerLogConfigs
 import org.junit.jupiter.api.Assertions._
 import org.junit.jupiter.api.{BeforeEach, Test, TestInfo}
 import org.junit.jupiter.params.ParameterizedTest
@@ -43,8 +44,7 @@ class AddPartitionsToTxnRequestServerTest extends BaseRequestTest {
   val numPartitions = 1
 
   override def brokerPropertyOverrides(properties: Properties): Unit = {
-    properties.put(KafkaConfig.UnstableApiVersionsEnableProp, "true")
-    properties.put(KafkaConfig.AutoCreateTopicsEnableProp, false.toString)
+    properties.put(ServerLogConfigs.AUTO_CREATE_TOPICS_ENABLE_CONFIG, false.toString)
   }
 
   @BeforeEach
@@ -53,9 +53,9 @@ class AddPartitionsToTxnRequestServerTest extends BaseRequestTest {
     createTopic(topic1, numPartitions, brokers.size, new Properties())
   }
 
-  @ParameterizedTest(name = TestInfoUtils.TestWithParameterizedQuorumName)
+  @ParameterizedTest
   @MethodSource(value = Array("parameters"))
-  def shouldReceiveOperationNotAttemptedWhenOtherPartitionHasError(quorum: String, version: Short): Unit = {
+  def shouldReceiveOperationNotAttemptedWhenOtherPartitionHasError(version: Short): Unit = {
     // The basic idea is that we have one unknown topic and one created topic. We should get the 'UNKNOWN_TOPIC_OR_PARTITION'
     // error for the unknown topic and the 'OPERATION_NOT_ATTEMPTED' error for the known and authorized topic.
     val nonExistentTopic = new TopicPartition("unknownTopic", 0)
@@ -109,7 +109,7 @@ class AddPartitionsToTxnRequestServerTest extends BaseRequestTest {
     assertTrue(errors.containsKey(nonExistentTopic))
     assertEquals(Errors.UNKNOWN_TOPIC_OR_PARTITION, errors.get(nonExistentTopic))
   }
-  
+
   @Test
   def testOneSuccessOneErrorInBatchedRequest(): Unit = {
     val tp0 = new TopicPartition(topic1, 0)
@@ -123,7 +123,7 @@ class AddPartitionsToTxnRequestServerTest extends BaseRequestTest {
       .setName(tp0.topic)
       .setPartitions(Collections.singletonList(tp0.partition)))
 
-    val (coordinatorId, txn1) = setUpTransactions(transactionalId1, false, Set(tp0))
+    val (coordinatorId, txn1) = setUpTransactions(transactionalId1, verifyOnly = false, Set(tp0))
 
     val transactions = new AddPartitionsToTxnTransactionCollection()
     transactions.add(txn1)
@@ -153,7 +153,7 @@ class AddPartitionsToTxnRequestServerTest extends BaseRequestTest {
     val tp0 = new TopicPartition(topic1, 0)
 
     val transactionalId = "foobar"
-    val (coordinatorId, txn) = setUpTransactions(transactionalId, true, Set(tp0))
+    val (coordinatorId, txn) = setUpTransactions(transactionalId, verifyOnly = true, Set(tp0))
 
     val transactions = new AddPartitionsToTxnTransactionCollection()
     transactions.add(txn)
@@ -164,7 +164,7 @@ class AddPartitionsToTxnRequestServerTest extends BaseRequestTest {
 
     val verifyErrors = verifyResponse.errors()
 
-    assertEquals(Collections.singletonMap(transactionalId, Collections.singletonMap(tp0, Errors.INVALID_TXN_STATE)), verifyErrors)
+    assertEquals(Collections.singletonMap(transactionalId, Collections.singletonMap(tp0, Errors.TRANSACTION_ABORTABLE)), verifyErrors)
   }
   
   private def setUpTransactions(transactionalId: String, verifyOnly: Boolean, partitions: Set[TopicPartition]): (Int, AddPartitionsToTxnTransaction) = {
@@ -172,11 +172,17 @@ class AddPartitionsToTxnRequestServerTest extends BaseRequestTest {
     // First find coordinator request creates the state topic, then wait for transactional topics to be created.
     connectAndReceive[FindCoordinatorResponse](findCoordinatorRequest, brokerSocketServer(brokers.head.config.brokerId))
     TestUtils.waitForAllPartitionsMetadata(brokers, "__transaction_state", 50)
+    TestUtils.ensureConsistentKRaftMetadata(brokers, controllerServer)
     val findCoordinatorResponse = connectAndReceive[FindCoordinatorResponse](findCoordinatorRequest, brokerSocketServer(brokers.head.config.brokerId))
     val coordinatorId = findCoordinatorResponse.data().coordinators().get(0).nodeId()
 
-    val initPidRequest = new InitProducerIdRequest.Builder(new InitProducerIdRequestData().setTransactionalId(transactionalId).setTransactionTimeoutMs(10000)).build()
-    val initPidResponse = connectAndReceive[InitProducerIdResponse](initPidRequest, brokerSocketServer(coordinatorId))
+    var initPidResponse: InitProducerIdResponse = null
+
+    TestUtils.waitUntilTrue(() => {
+      val initPidRequest = new InitProducerIdRequest.Builder(new InitProducerIdRequestData().setTransactionalId(transactionalId).setTransactionTimeoutMs(10000)).build()
+      initPidResponse = connectAndReceive[InitProducerIdResponse](initPidRequest, brokerSocketServer(coordinatorId))
+      initPidResponse.error() != Errors.COORDINATOR_LOAD_IN_PROGRESS
+    }, "Failed to get a valid InitProducerIdResponse.")
 
     val producerId1 = initPidResponse.data().producerId()
     val producerEpoch1 = initPidResponse.data().producerEpoch()
@@ -201,9 +207,7 @@ object AddPartitionsToTxnRequestServerTest {
    def parameters: JStream[Arguments] = {
     val arguments = mutable.ListBuffer[Arguments]()
     ApiKeys.ADD_PARTITIONS_TO_TXN.allVersions().forEach { version =>
-      Array("kraft", "zk").foreach { quorum =>
-        arguments += Arguments.of(quorum, version)
-      }
+      arguments += Arguments.of(version)
     }
     arguments.asJava.stream()
   }

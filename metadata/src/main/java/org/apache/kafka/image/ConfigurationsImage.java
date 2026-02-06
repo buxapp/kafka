@@ -18,15 +18,14 @@
 package org.apache.kafka.image;
 
 import org.apache.kafka.common.config.ConfigResource;
+import org.apache.kafka.image.node.ConfigurationsImageNode;
 import org.apache.kafka.image.writer.ImageWriter;
-import org.apache.kafka.image.writer.ImageWriterOptions;
 
 import java.util.Collections;
-import java.util.Map.Entry;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Properties;
-import java.util.stream.Collectors;
 
 
 /**
@@ -36,7 +35,7 @@ import java.util.stream.Collectors;
  */
 public final class ConfigurationsImage {
     public static final ConfigurationsImage EMPTY =
-        new ConfigurationsImage(Collections.emptyMap());
+        new ConfigurationsImage(Map.of());
 
     private final Map<ConfigResource, ConfigurationImage> data;
 
@@ -48,7 +47,7 @@ public final class ConfigurationsImage {
         return data.isEmpty();
     }
 
-    Map<ConfigResource, ConfigurationImage> resourceData() {
+    public Map<ConfigResource, ConfigurationImage> resourceData() {
         return data;
     }
 
@@ -70,22 +69,21 @@ public final class ConfigurationsImage {
         if (configurationImage != null) {
             return configurationImage.toMap();
         } else {
-            return Collections.emptyMap();
+            return Map.of();
         }
     }
 
-    public void write(ImageWriter writer, ImageWriterOptions options) {
+    public void write(ImageWriter writer) {
         for (Entry<ConfigResource, ConfigurationImage> entry : data.entrySet()) {
             ConfigResource configResource = entry.getKey();
             ConfigurationImage configImage = entry.getValue();
-            configImage.write(configResource, writer, options);
+            configImage.write(configResource, writer);
         }
     }
 
     @Override
     public boolean equals(Object o) {
-        if (!(o instanceof ConfigurationsImage)) return false;
-        ConfigurationsImage other = (ConfigurationsImage) o;
+        if (!(o instanceof ConfigurationsImage other)) return false;
         return data.equals(other.data);
     }
 
@@ -96,8 +94,6 @@ public final class ConfigurationsImage {
 
     @Override
     public String toString() {
-        return "ConfigurationsImage(data=" + data.entrySet().stream().
-            map(e -> e.getKey() + ":" + e.getValue()).collect(Collectors.joining(", ")) +
-            ")";
+        return new ConfigurationsImageNode(this).stringify();
     }
 }

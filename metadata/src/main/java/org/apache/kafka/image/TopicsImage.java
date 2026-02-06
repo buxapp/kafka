@@ -18,45 +18,33 @@
 package org.apache.kafka.image;
 
 import org.apache.kafka.common.Uuid;
+import org.apache.kafka.image.node.TopicsImageByNameNode;
 import org.apache.kafka.image.writer.ImageWriter;
 import org.apache.kafka.image.writer.ImageWriterOptions;
 import org.apache.kafka.metadata.PartitionRegistration;
+import org.apache.kafka.server.immutable.ImmutableMap;
 import org.apache.kafka.server.util.TranslatedValueMapView;
 
-import java.util.Collections;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.stream.Collectors;
-
 
 /**
  * Represents the topics in the metadata image.
- *
+ * <p>
  * This class is thread-safe.
  */
-public final class TopicsImage {
-    public static final TopicsImage EMPTY =
-        new TopicsImage(Collections.emptyMap(), Collections.emptyMap());
+public record TopicsImage(ImmutableMap<Uuid, TopicImage> topicsById, ImmutableMap<String, TopicImage> topicsByName) {
+    public static final TopicsImage EMPTY = new TopicsImage(ImmutableMap.empty(), ImmutableMap.empty());
 
-    private final Map<Uuid, TopicImage> topicsById;
-    private final Map<String, TopicImage> topicsByName;
-
-    public TopicsImage(Map<Uuid, TopicImage> topicsById,
-                       Map<String, TopicImage> topicsByName) {
-        this.topicsById = Collections.unmodifiableMap(topicsById);
-        this.topicsByName = Collections.unmodifiableMap(topicsByName);
+    public TopicsImage including(TopicImage topic) {
+        return new TopicsImage(
+            this.topicsById.updated(topic.id(), topic),
+            this.topicsByName.updated(topic.name(), topic));
     }
 
     public boolean isEmpty() {
         return topicsById.isEmpty() && topicsByName.isEmpty();
-    }
-
-    public Map<Uuid, TopicImage> topicsById() {
-        return topicsById;
-    }
-
-    public Map<String, TopicImage> topicsByName() {
-        return topicsByName;
     }
 
     public PartitionRegistration getPartition(Uuid id, int partitionId) {
@@ -74,48 +62,46 @@ public final class TopicsImage {
     }
 
     public void write(ImageWriter writer, ImageWriterOptions options) {
-        for (TopicImage topicImage : topicsById.values()) {
-            topicImage.write(writer, options);
+        for (Map.Entry<Uuid, TopicImage> entry : topicsById.entrySet()) {
+            entry.getValue().write(writer, options);
         }
-    }
-
-    @Override
-    public boolean equals(Object o) {
-        if (!(o instanceof TopicsImage)) return false;
-        TopicsImage other = (TopicsImage) o;
-        return topicsById.equals(other.topicsById) &&
-            topicsByName.equals(other.topicsByName);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(topicsById, topicsByName);
     }
 
     /**
      * Expose a view of this TopicsImage as a map from topic names to IDs.
-     *
+     * <p>
      * Like TopicsImage itself, this map is immutable.
      */
     public Map<String, Uuid> topicNameToIdView() {
-        return new TranslatedValueMapView<>(topicsByName, image -> image.id());
+        return new TranslatedValueMapView<>(topicsByName, TopicImage::id);
     }
 
     /**
      * Expose a view of this TopicsImage as a map from IDs to names.
-     *
+     * <p>
      * Like TopicsImage itself, this map is immutable.
      */
     public Map<Uuid, String> topicIdToNameView() {
-        return new TranslatedValueMapView<>(topicsById, image -> image.name());
+        return new TranslatedValueMapView<>(topicsById, TopicImage::name);
     }
 
     @Override
     public String toString() {
-        return "TopicsImage(topicsById=" + topicsById.entrySet().stream().
-            map(e -> e.getKey() + ":" + e.getValue()).collect(Collectors.joining(", ")) +
-            ", topicsByName=" + topicsByName.entrySet().stream().
-            map(e -> e.getKey() + ":" + e.getValue()).collect(Collectors.joining(", ")) +
-            ")";
+        return new TopicsImageByNameNode(this).stringify();
+    }
+
+    /**
+     * The list of replicas hosting the specified partition
+     * @param topicId        The topic ID
+     * @param partitionId    The partition ID
+     * @return               The list of replicas
+     */
+    public List<Integer> partitionReplicas(Uuid topicId, int partitionId) {
+        PartitionRegistration partition = getPartition(topicId, partitionId);
+        if (partition == null) {
+            return List.of();
+        } else {
+            return Arrays.stream(partition.replicas).boxed().toList();
+        }
     }
 }

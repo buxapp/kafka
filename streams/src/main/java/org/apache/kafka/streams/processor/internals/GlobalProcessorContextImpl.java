@@ -33,8 +33,9 @@ import org.apache.kafka.streams.state.internals.ThreadCache;
 import org.apache.kafka.streams.state.internals.ThreadCache.DirtyEntryFlushListener;
 
 import java.time.Duration;
+import java.time.Instant;
 
-import static org.apache.kafka.streams.processor.internals.AbstractReadWriteDecorator.getReadWriteStore;
+import static org.apache.kafka.streams.processor.internals.AbstractReadWriteDecorator.wrapWithReadWriteStore;
 
 public class GlobalProcessorContextImpl extends AbstractProcessorContext<Object, Object> {
 
@@ -59,8 +60,8 @@ public class GlobalProcessorContextImpl extends AbstractProcessorContext<Object,
     @SuppressWarnings("unchecked")
     @Override
     public <S extends StateStore> S getStateStore(final String name) {
-        final StateStore store = stateManager.getGlobalStore(name);
-        return (S) getReadWriteStore(store);
+        final StateStore store = stateManager.globalStore(name);
+        return (S) wrapWithReadWriteStore(store);
     }
 
     @SuppressWarnings("unchecked")
@@ -84,7 +85,7 @@ public class GlobalProcessorContextImpl extends AbstractProcessorContext<Object,
 
     @Override
     public <KIn, VIn> void forward(final KIn key, final VIn value) {
-        forward(new Record<>(key, value, timestamp(), headers()));
+        forward(new Record<>(key, value, recordContext().timestamp(), headers()));
     }
 
     /**
@@ -130,6 +131,11 @@ public class GlobalProcessorContextImpl extends AbstractProcessorContext<Object,
      */
     @Override
     public Cancellable schedule(final Duration interval, final PunctuationType type, final Punctuator callback) {
+        throw new UnsupportedOperationException("this should not happen: schedule() not supported in global processor context.");
+    }
+
+    @Override
+    public Cancellable schedule(final Instant startTime, final Duration interval, final PunctuationType type, final Punctuator callback) {
         throw new UnsupportedOperationException("this should not happen: schedule() not supported in global processor context.");
     }
 

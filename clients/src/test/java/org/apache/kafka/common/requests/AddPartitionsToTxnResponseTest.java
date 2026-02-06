@@ -18,19 +18,21 @@ package org.apache.kafka.common.requests;
 
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.message.AddPartitionsToTxnResponseData;
+import org.apache.kafka.common.message.AddPartitionsToTxnResponseData.AddPartitionsToTxnPartitionResult;
 import org.apache.kafka.common.message.AddPartitionsToTxnResponseData.AddPartitionsToTxnResult;
 import org.apache.kafka.common.message.AddPartitionsToTxnResponseData.AddPartitionsToTxnResultCollection;
-import org.apache.kafka.common.message.AddPartitionsToTxnResponseData.AddPartitionsToTxnPartitionResult;
 import org.apache.kafka.common.message.AddPartitionsToTxnResponseData.AddPartitionsToTxnTopicResult;
 import org.apache.kafka.common.message.AddPartitionsToTxnResponseData.AddPartitionsToTxnTopicResultCollection;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.utils.annotation.ApiKeyVersionsSource;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 
 import java.util.Collections;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -56,7 +58,7 @@ public class AddPartitionsToTxnResponseTest {
 
     @BeforeEach
     public void setUp() {
-        expectedErrorCounts = new HashMap<>();
+        expectedErrorCounts = new EnumMap<>(Errors.class);
         expectedErrorCounts.put(errorOne, 1);
         expectedErrorCounts.put(errorTwo, 1);
 
@@ -106,7 +108,7 @@ public class AddPartitionsToTxnResponseTest {
                     .setThrottleTimeMs(throttleTimeMs);
             AddPartitionsToTxnResponse response = new AddPartitionsToTxnResponse(data);
 
-            Map<Errors, Integer> newExpectedErrorCounts = new HashMap<>();
+            Map<Errors, Integer> newExpectedErrorCounts = new EnumMap<>(Errors.class);
             newExpectedErrorCounts.put(Errors.NONE, 1); // top level error
             newExpectedErrorCounts.put(errorOne, 2);
             newExpectedErrorCounts.put(errorTwo, 1);

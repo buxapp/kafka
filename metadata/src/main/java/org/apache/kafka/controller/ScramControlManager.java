@@ -26,11 +26,13 @@ import org.apache.kafka.common.message.AlterUserScramCredentialsResponseData.Alt
 import org.apache.kafka.common.metadata.RemoveUserScramCredentialRecord;
 import org.apache.kafka.common.metadata.UserScramCredentialRecord;
 import org.apache.kafka.common.requests.ApiError;
+import org.apache.kafka.common.security.scram.internals.ScramFormatter;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.server.common.ApiMessageAndVersion;
 import org.apache.kafka.server.common.MetadataVersion;
 import org.apache.kafka.timeline.SnapshotRegistry;
 import org.apache.kafka.timeline.TimelineHashMap;
+
 import org.slf4j.Logger;
 
 import java.util.ArrayList;
@@ -44,9 +46,9 @@ import java.util.Objects;
 import static org.apache.kafka.common.protocol.Errors.DUPLICATE_RESOURCE;
 import static org.apache.kafka.common.protocol.Errors.NONE;
 import static org.apache.kafka.common.protocol.Errors.RESOURCE_NOT_FOUND;
-import static org.apache.kafka.common.protocol.Errors.UNSUPPORTED_VERSION;
 import static org.apache.kafka.common.protocol.Errors.UNACCEPTABLE_CREDENTIAL;
 import static org.apache.kafka.common.protocol.Errors.UNSUPPORTED_SASL_MECHANISM;
+import static org.apache.kafka.common.protocol.Errors.UNSUPPORTED_VERSION;
 
 
 /**
@@ -111,22 +113,30 @@ public class ScramControlManager {
 
     static class ScramCredentialValue {
         private final byte[] salt;
-        private final byte[] saltedPassword;
+        private final byte[] storedKey;
+        private final byte[] serverKey;
         private final int iterations;
 
         ScramCredentialValue(
             byte[] salt,
-            byte[] saltedPassword,
+            byte[] storedKey,
+            byte[] serverKey,
             int iterations
         ) {
             this.salt = salt;
-            this.saltedPassword = saltedPassword;
+            this.storedKey = storedKey;
+            this.serverKey = serverKey;
             this.iterations = iterations;
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(salt, saltedPassword, iterations);
+            return Objects.hash(
+                Arrays.hashCode(salt),
+                Arrays.hashCode(storedKey),
+                Arrays.hashCode(serverKey),
+                iterations
+            );
         }
 
         @Override
@@ -135,7 +145,8 @@ public class ScramControlManager {
             if (!(o.getClass() == this.getClass())) return false;
             ScramCredentialValue other = (ScramCredentialValue) o;
             return Arrays.equals(salt, other.salt) &&
-                Arrays.equals(saltedPassword, other.saltedPassword) &&
+                Arrays.equals(storedKey, other.storedKey) &&
+                Arrays.equals(serverKey, other.serverKey) &&
                 iterations == other.iterations;
         }
 
@@ -143,7 +154,8 @@ public class ScramControlManager {
         public String toString() {
             return "ScramCredentialValue" +
                 "(salt=" + "[hidden]" +
-                ", saltedPassword=" + "[hidden]" +
+                ", storedKey=" + "[hidden]" +
+                ", serverKey=" + "[hidden]" +
                 ", iterations=" + "[hidden]" +
                 ")";
         }
@@ -181,7 +193,7 @@ public class ScramControlManager {
                 } else {
                     if (!scramIsSupported) {
                         userToError.put(deletion.name(), new ApiError(UNSUPPORTED_VERSION,
-                            "The current metadata version does not support SCRAM"));
+                            "The current metadata.version does not support SCRAM"));
                     } else {
                         ApiError error = validateDeletion(deletion);
                         if (error.isFailure()) {
@@ -202,7 +214,7 @@ public class ScramControlManager {
                 } else {
                     if (!scramIsSupported) {
                         userToError.put(upsertion.name(), new ApiError(UNSUPPORTED_VERSION,
-                            "The current metadata version does not support SCRAM"));
+                            "The current metadata.version does not support SCRAM"));
                     } else {
                         ApiError error = validateUpsertion(upsertion);
                         if (error.isFailure()) {
@@ -226,16 +238,15 @@ public class ScramControlManager {
                 setMechanism(deletion.mechanism()), (short) 0));
         }
         for (ScramCredentialUpsertion upsertion : userToUpsert.values()) {
-            response.results().add(new AlterUserScramCredentialsResult().
-                setUser(upsertion.name()).
-                setErrorCode(NONE.code()).
-                setErrorMessage(null));
-            records.add(new ApiMessageAndVersion(new UserScramCredentialRecord().
-                setName(upsertion.name()).
-                setMechanism(upsertion.mechanism()).
-                setSalt(upsertion.salt()).
-                setSaltedPassword(upsertion.saltedPassword()).
-                setIterations(upsertion.iterations()), (short) 0));
+            ApiError error = finishUpsertion(records, upsertion);
+            if (!error.isFailure()) {
+                response.results().add(new AlterUserScramCredentialsResult().
+                    setUser(upsertion.name()).
+                    setErrorCode(NONE.code()).
+                    setErrorMessage(null));
+            } else {
+                userToError.put(upsertion.name(), error);
+            }
         }
         for (Entry<String, ApiError> entry : userToError.entrySet()) {
             response.results().add(new AlterUserScramCredentialsResult().
@@ -244,6 +255,30 @@ public class ScramControlManager {
                 setErrorMessage(entry.getValue().message()));
         }
         return ControllerResult.atomicOf(records, response);
+    }
+
+    static ApiError finishUpsertion(List<ApiMessageAndVersion> records, ScramCredentialUpsertion upsertion) {
+        org.apache.kafka.common.security.scram.internals.ScramMechanism internalMechanism = 
+                org.apache.kafka.common.security.scram.internals.ScramMechanism.forMechanismName(
+                ScramMechanism.fromType(upsertion.mechanism()).mechanismName());
+
+        try { // Convert from saltedPassword to storedKey and serverKey
+            ScramFormatter formatter = new ScramFormatter(internalMechanism);
+
+            records.add(new ApiMessageAndVersion(new UserScramCredentialRecord().
+                setName(upsertion.name()).
+                setMechanism(upsertion.mechanism()).
+                setSalt(upsertion.salt()).
+
+                // Convert from saltedPassword to storedKey and serverKey
+                setStoredKey(formatter.storedKey(formatter.clientKey(upsertion.saltedPassword()))).
+                setServerKey(formatter.serverKey(upsertion.saltedPassword())).
+                setIterations(upsertion.iterations()), (short) 0));
+
+        } catch (Throwable e) {
+            return ApiError.fromThrowable(e);
+        }
+        return ApiError.NONE;
     }
 
     static ApiError validateUpsertion(ScramCredentialUpsertion upsertion) {
@@ -292,7 +327,7 @@ public class ScramControlManager {
         if (credentials.remove(key) == null) {
             throw new RuntimeException("Unable to find credential to delete: " + key);
         }
-        log.info("Removed SCRAM credential for {} with mechanism {}.",
+        log.info("Replayed RemoveUserScramCredentialRecord for {} with mechanism {}.",
             key.username, key.mechanism);
     }
 
@@ -300,25 +335,16 @@ public class ScramControlManager {
         ScramCredentialKey key = new ScramCredentialKey(record.name(),
             ScramMechanism.fromType(record.mechanism()));
         ScramCredentialValue value = new ScramCredentialValue(record.salt(),
-            record.saltedPassword(),
+            record.storedKey(),
+            record.serverKey(),
             record.iterations());
         if (credentials.put(key, value) == null) {
-            log.info("Created new SCRAM credential for {} with mechanism {}.",
-                key.username, key.mechanism);
+            log.info("Replayed UserScramCredentialRecord creating new entry for {} with " +
+                "mechanism {}.", key.username, key.mechanism);
         } else {
-            log.info("Modified SCRAM credential for {} with mechanism {}.",
-                key.username, key.mechanism);
+            log.info("Replayed UserScramCredentialRecord modifying existing entry for {} " +
+                "with mechanism {}.", key.username, key.mechanism);
         }
-    }
-
-    ApiMessageAndVersion toRecord(ScramCredentialKey key, ScramCredentialValue value) {
-        return new ApiMessageAndVersion(new UserScramCredentialRecord().
-                setName(key.username).
-                setMechanism(key.mechanism.type()).
-                setSalt(value.salt).
-                setSaltedPassword(value.saltedPassword).
-                setIterations(value.iterations),
-            (short) 0);
     }
 
 }

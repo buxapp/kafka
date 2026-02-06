@@ -17,19 +17,23 @@
 
 package kafka.server
 
-import kafka.cluster.BrokerEndPoint
-import kafka.utils.Implicits._
 import kafka.utils.Logging
 import org.apache.kafka.common.{TopicPartition, Uuid}
 import org.apache.kafka.common.utils.Utils
 import org.apache.kafka.server.metrics.KafkaMetricsGroup
+import org.apache.kafka.server.network.BrokerEndPoint
+import org.apache.kafka.server.PartitionFetchState
 
 import scala.collection.{Map, Set, mutable}
 import scala.jdk.CollectionConverters._
+import scala.jdk.OptionConverters._
 
 abstract class AbstractFetcherManager[T <: AbstractFetcherThread](val name: String, clientId: String, numFetchers: Int)
   extends Logging {
-  private val metricsGroup = new KafkaMetricsGroup(this.getClass)
+  // Changing the package or class name may cause incompatibility with existing code and metrics configuration
+  private val metricsPackage = "kafka.server"
+  private val metricsClassName = this.getClass.getSimpleName
+  private val metricsGroup = new KafkaMetricsGroup(metricsPackage, metricsClassName)
 
   // map of (source broker_id, fetcher_id per source broker) => fetcher.
   // package private for test
@@ -44,8 +48,7 @@ abstract class AbstractFetcherManager[T <: AbstractFetcherThread](val name: Stri
   metricsGroup.newGauge("MaxLag", () => {
     // current max lag across all fetchers/topics/partitions
     fetcherThreadMap.values.foldLeft(0L) { (curMaxLagAll, fetcherThread) =>
-      val maxLagThread = fetcherThread.fetcherLagStats.stats.values.foldLeft(0L)((curMaxLagThread, lagMetrics) =>
-        math.max(curMaxLagThread, lagMetrics.lag))
+      val maxLagThread = fetcherThread.fetcherLagStats.stats.values.stream().mapToLong(v => v.lag).max().orElse(0L)
       math.max(curMaxLagAll, maxLagThread)
     }
   }, tags)
@@ -66,12 +69,12 @@ abstract class AbstractFetcherManager[T <: AbstractFetcherThread](val name: Stri
   def resizeThreadPool(newSize: Int): Unit = {
     def migratePartitions(newSize: Int): Unit = {
       val allRemovedPartitionsMap = mutable.Map[TopicPartition, InitialFetchState]()
-      fetcherThreadMap.forKeyValue { (id, thread) =>
+      fetcherThreadMap.foreachEntry { (id, thread) =>
         val partitionStates = thread.removeAllPartitions()
         if (id.fetcherId >= newSize)
           thread.shutdown()
-        partitionStates.forKeyValue { (topicPartition, currentFetchState) =>
-            val initialFetchState = InitialFetchState(currentFetchState.topicId, thread.leader.brokerEndPoint(),
+        partitionStates.foreachEntry { (topicPartition, currentFetchState) =>
+            val initialFetchState = InitialFetchState(currentFetchState.topicId.toScala, thread.leader.brokerEndPoint(),
               currentLeaderEpoch = currentFetchState.currentLeaderEpoch,
               initOffset = currentFetchState.fetchOffset)
             allRemovedPartitionsMap += topicPartition -> initialFetchState

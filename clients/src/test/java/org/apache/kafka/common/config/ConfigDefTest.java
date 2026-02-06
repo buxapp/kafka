@@ -25,6 +25,7 @@ import org.apache.kafka.common.config.ConfigDef.ValidString;
 import org.apache.kafka.common.config.ConfigDef.Validator;
 import org.apache.kafka.common.config.ConfigDef.Width;
 import org.apache.kafka.common.config.types.Password;
+
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -95,7 +96,7 @@ public class ConfigDefTest {
 
     @Test
     public void testNullDefault() {
-        ConfigDef def = new ConfigDef().define("a", Type.INT, null, null, null, "docs");
+        ConfigDef def = new ConfigDef().define("a", Type.INT, null, null, "docs");
         Map<String, Object> vals = def.parse(new Properties());
 
         assertNull(vals.get("a"));
@@ -121,7 +122,7 @@ public class ConfigDefTest {
     @Test
     public void testBadInputs() {
         testBadInputs(Type.INT, "hello", "42.5", 42.5, Long.MAX_VALUE, Long.toString(Long.MAX_VALUE), new Object());
-        testBadInputs(Type.LONG, "hello", "42.5", Long.toString(Long.MAX_VALUE) + "00", new Object());
+        testBadInputs(Type.LONG, "hello", "42.5", Long.MAX_VALUE + "00", new Object());
         testBadInputs(Type.DOUBLE, "hello", new Object());
         testBadInputs(Type.STRING, new Object());
         testBadInputs(Type.LIST, 53, new Object());
@@ -134,12 +135,9 @@ public class ConfigDefTest {
             Map<String, Object> m = new HashMap<>();
             m.put("name", value);
             ConfigDef def = new ConfigDef().define("name", type, Importance.HIGH, "docs");
-            try {
-                def.parse(m);
-                fail("Expected a config exception on bad input for value " + value);
-            } catch (ConfigException e) {
-                // this is good
-            }
+            assertThrows(ConfigException.class,
+                () -> def.parse(m),
+                "Expected a config exception on bad input for value " + value);
         }
     }
 
@@ -242,7 +240,7 @@ public class ConfigDefTest {
         String errorMessageC = "Missing required configuration \"c\" which has no default value.";
         ConfigValue configA = new ConfigValue("a", 1, Collections.emptyList(), Collections.emptyList());
         ConfigValue configB = new ConfigValue("b", null, Collections.emptyList(), Arrays.asList(errorMessageB, errorMessageB));
-        ConfigValue configC = new ConfigValue("c", null, Collections.emptyList(), Arrays.asList(errorMessageC));
+        ConfigValue configC = new ConfigValue("c", null, Collections.emptyList(), singletonList(errorMessageC));
         ConfigValue configD = new ConfigValue("d", 10, Collections.emptyList(), Collections.emptyList());
         expected.put("a", configA);
         expected.put("b", configB);
@@ -253,7 +251,7 @@ public class ConfigDefTest {
             .define("a", Type.INT, Importance.HIGH, "docs", "group", 1, Width.SHORT, "a", Arrays.asList("b", "c"), new IntegerRecommender(false))
             .define("b", Type.INT, Importance.HIGH, "docs", "group", 2, Width.SHORT, "b", new IntegerRecommender(true))
             .define("c", Type.INT, Importance.HIGH, "docs", "group", 3, Width.SHORT, "c", new IntegerRecommender(true))
-            .define("d", Type.INT, Importance.HIGH, "docs", "group", 4, Width.SHORT, "d", Arrays.asList("b"), new IntegerRecommender(false));
+            .define("d", Type.INT, Importance.HIGH, "docs", "group", 4, Width.SHORT, "d", singletonList("b"), new IntegerRecommender(false));
 
         Map<String, String> props = new HashMap<>();
         props.put("a", "1");
@@ -279,7 +277,7 @@ public class ConfigDefTest {
 
         ConfigValue configA = new ConfigValue("a", 1, Arrays.asList(1, 2, 3), Collections.emptyList());
         ConfigValue configB = new ConfigValue("b", null, Arrays.asList(4, 5), Arrays.asList(errorMessageB, errorMessageB));
-        ConfigValue configC = new ConfigValue("c", null, Arrays.asList(4, 5), Arrays.asList(errorMessageC));
+        ConfigValue configC = new ConfigValue("c", null, Arrays.asList(4, 5), singletonList(errorMessageC));
         ConfigValue configD = new ConfigValue("d", 10, Arrays.asList(1, 2, 3), Collections.emptyList());
 
         expected.put("a", configA);
@@ -291,7 +289,7 @@ public class ConfigDefTest {
             .define("a", Type.INT, Importance.HIGH, "docs", "group", 1, Width.SHORT, "a", Arrays.asList("b", "c"), new IntegerRecommender(false))
             .define("b", Type.INT, Importance.HIGH, "docs", "group", 2, Width.SHORT, "b", new IntegerRecommender(true))
             .define("c", Type.INT, Importance.HIGH, "docs", "group", 3, Width.SHORT, "c", new IntegerRecommender(true))
-            .define("d", Type.INT, Importance.HIGH, "docs", "group", 4, Width.SHORT, "d", Arrays.asList("b"), new IntegerRecommender(false));
+            .define("d", Type.INT, Importance.HIGH, "docs", "group", 4, Width.SHORT, "d", singletonList("b"), new IntegerRecommender(false));
 
         Map<String, String> props = new HashMap<>();
         props.put("a", "1");
@@ -313,9 +311,9 @@ public class ConfigDefTest {
         String errorMessageD = "d is referred in the dependents, but not defined.";
 
         ConfigValue configA = new ConfigValue("a", 1, Arrays.asList(1, 2, 3), Collections.emptyList());
-        ConfigValue configB = new ConfigValue("b", null, Arrays.asList(4, 5), Arrays.asList(errorMessageB));
-        ConfigValue configC = new ConfigValue("c", null, Arrays.asList(4, 5), Arrays.asList(errorMessageC));
-        ConfigValue configD = new ConfigValue("d", null, Collections.emptyList(), Arrays.asList(errorMessageD));
+        ConfigValue configB = new ConfigValue("b", null, Arrays.asList(4, 5), singletonList(errorMessageB));
+        ConfigValue configC = new ConfigValue("c", null, Arrays.asList(4, 5), singletonList(errorMessageC));
+        ConfigValue configD = new ConfigValue("d", null, Collections.emptyList(), singletonList(errorMessageD));
         configD.visible(false);
 
         expected.put("a", configA);
@@ -343,7 +341,7 @@ public class ConfigDefTest {
     public void testValidateCannotParse() {
         Map<String, ConfigValue> expected = new HashMap<>();
         String errorMessageB = "Invalid value non_integer for configuration a: Not a number of type INT";
-        ConfigValue configA = new ConfigValue("a", null, Collections.emptyList(), Arrays.asList(errorMessageB));
+        ConfigValue configA = new ConfigValue("a", null, Collections.emptyList(), singletonList(errorMessageB));
         expected.put("a", configA);
 
         ConfigDef def = new ConfigDef().define("a", Type.INT, Importance.HIGH, "docs");
@@ -415,7 +413,7 @@ public class ConfigDefTest {
                 .define("a", Type.STRING, Importance.LOW, "docs")
                 .define("b", Type.STRING, Importance.LOW, "docs");
         Set<String> names = configDef.names();
-        assertEquals(new HashSet<>(Arrays.asList("a", "b")), names);
+        assertEquals(Set.of("a", "b"), names);
         // should be unmodifiable
         try {
             names.add("new");
@@ -438,19 +436,19 @@ public class ConfigDefTest {
         // Creating a ConfigDef based on another should compute the correct number of configs with no parent, even
         // if the base ConfigDef has already computed its parentless configs
         final ConfigDef baseConfigDef = new ConfigDef().define("a", Type.STRING, Importance.LOW, "docs");
-        assertEquals(new HashSet<>(Arrays.asList("a")), baseConfigDef.getConfigsWithNoParent());
+        assertEquals(Set.of("a"), baseConfigDef.getConfigsWithNoParent());
 
         final ConfigDef configDef = new ConfigDef(baseConfigDef)
                 .define("parent", Type.STRING, Importance.HIGH, "parent docs", "group", 1, Width.LONG, "Parent", singletonList("child"))
                 .define("child", Type.STRING, Importance.HIGH, "docs");
 
-        assertEquals(new HashSet<>(Arrays.asList("a", "parent")), configDef.getConfigsWithNoParent());
+        assertEquals(Set.of("a", "parent"), configDef.getConfigsWithNoParent());
     }
 
 
     private static class IntegerRecommender implements ConfigDef.Recommender {
 
-        private boolean hasParent;
+        private final boolean hasParent;
 
         public IntegerRecommender(boolean hasParent) {
             this.hasParent = hasParent;
@@ -485,12 +483,9 @@ public class ConfigDefTest {
         for (Object value : badValues) {
             Map<String, Object> m = new HashMap<>();
             m.put("name", value);
-            try {
-                def.parse(m);
-                fail("Expected a config exception due to invalid value " + value);
-            } catch (ConfigException e) {
-                // this is good
-            }
+            assertThrows(ConfigException.class,
+                () -> def.parse(m),
+                "Expected a config exception due to invalid value " + value);
         }
     }
 
@@ -502,7 +497,7 @@ public class ConfigDefTest {
                 .define("opt3", Type.LIST, Arrays.asList("a", "b"), Importance.LOW, "docs3")
                 .define("opt4", Type.BOOLEAN, false, Importance.LOW, null);
 
-        final String expectedRst = "" +
+        final String expectedRst =
                 "``opt2``\n" +
                 "  docs2\n" +
                 "\n" +
@@ -547,7 +542,7 @@ public class ConfigDefTest {
                         "Group Two", 0, Width.NONE, "..", singletonList("some.option"))
                 .define("poor.opt", Type.STRING, "foo", Importance.HIGH, "Doc doc doc doc.");
 
-        final String expectedRst = "" +
+        final String expectedRst =
                 "``poor.opt``\n" +
                 "  Doc doc doc doc.\n" +
                 "\n" +
@@ -621,7 +616,10 @@ public class ConfigDefTest {
 
     @Test
     public void testConvertValueToStringDouble() {
-        assertEquals("3.125", ConfigDef.convertToString(3.125, Type.DOUBLE));
+        assertEquals("3.125", ConfigDef.convertToString(3.125d, Type.DOUBLE));
+        assertEquals("1.7976931348623157E308", ConfigDef.convertToString(Double.MAX_VALUE, Type.DOUBLE));
+        assertEquals("1.024E8",  ConfigDef.convertToString(102400000d, Type.DOUBLE));
+        assertEquals("-1.024E8",  ConfigDef.convertToString(-102400000d, Type.DOUBLE));
         assertNull(ConfigDef.convertToString(null, Type.DOUBLE));
     }
 
@@ -684,7 +682,7 @@ public class ConfigDefTest {
         }
     }
 
-    private class NestedClass {
+    private static class NestedClass {
     }
 
     @Test
@@ -763,4 +761,100 @@ public class ConfigDefTest {
         assertEquals("List containing maximum of 5 elements", ListSize.atMostOfSize(5).toString());
     }
 
+    @Test
+    public void testListValidatorAnyNonDuplicateValues() {
+        ConfigDef.ValidList allowAnyNonDuplicateValuesAndEmptyListAndNull = ConfigDef.ValidList.anyNonDuplicateValues(true, true);
+        assertDoesNotThrow(() -> allowAnyNonDuplicateValuesAndEmptyListAndNull.ensureValid("test.config", List.of("a", "b", "c")));
+        assertDoesNotThrow(() -> allowAnyNonDuplicateValuesAndEmptyListAndNull.ensureValid("test.config", List.of()));
+        assertDoesNotThrow(() -> allowAnyNonDuplicateValuesAndEmptyListAndNull.ensureValid("test.config", null));
+        ConfigException exception1 = assertThrows(ConfigException.class, () -> allowAnyNonDuplicateValuesAndEmptyListAndNull.ensureValid("test.config", List.of("a", "a")));
+        assertEquals("Configuration 'test.config' values must not be duplicated.", exception1.getMessage());
+        ConfigException exception2 = assertThrows(ConfigException.class, () -> allowAnyNonDuplicateValuesAndEmptyListAndNull.ensureValid("test.config", List.of("")));
+        assertEquals("Configuration 'test.config' values must not be empty.", exception2.getMessage());
+        ConfigException exception3 = assertThrows(ConfigException.class, () -> allowAnyNonDuplicateValuesAndEmptyListAndNull.ensureValid("test.config", List.of("a", "", "b")));
+        assertEquals("Configuration 'test.config' values must not be empty.", exception3.getMessage());
+
+        ConfigDef.ValidList allowAnyNonDuplicateValuesAndNull = ConfigDef.ValidList.anyNonDuplicateValues(false, true);
+        assertDoesNotThrow(() -> allowAnyNonDuplicateValuesAndNull.ensureValid("test.config", List.of("a", "b", "c")));
+        assertDoesNotThrow(() -> allowAnyNonDuplicateValuesAndNull.ensureValid("test.config", null));
+        ConfigException exception4 = assertThrows(ConfigException.class, () -> allowAnyNonDuplicateValuesAndNull.ensureValid("test.config", List.of()));
+        assertEquals("Configuration 'test.config' must not be empty. Valid values include: any non-empty value", exception4.getMessage());
+        ConfigException exception5 = assertThrows(ConfigException.class, () -> allowAnyNonDuplicateValuesAndNull.ensureValid("test.config", List.of("a", "a")));
+        assertEquals("Configuration 'test.config' values must not be duplicated.", exception5.getMessage());
+        ConfigException exception6 = assertThrows(ConfigException.class, () -> allowAnyNonDuplicateValuesAndNull.ensureValid("test.config", List.of("")));
+        assertEquals("Configuration 'test.config' values must not be empty.", exception6.getMessage());
+        ConfigException exception7 = assertThrows(ConfigException.class, () -> allowAnyNonDuplicateValuesAndNull.ensureValid("test.config", List.of("a", "", "b")));
+        assertEquals("Configuration 'test.config' values must not be empty.", exception7.getMessage());
+
+
+        ConfigDef.ValidList allowAnyNonDuplicateValuesAndEmptyList = ConfigDef.ValidList.anyNonDuplicateValues(true, false);
+        assertDoesNotThrow(() -> allowAnyNonDuplicateValuesAndEmptyList.ensureValid("test.config", List.of("a", "b", "c")));
+        assertDoesNotThrow(() -> allowAnyNonDuplicateValuesAndEmptyList.ensureValid("test.config", List.of()));
+        ConfigException exception8 = assertThrows(ConfigException.class, () -> allowAnyNonDuplicateValuesAndEmptyList.ensureValid("test.config", null));
+        assertEquals("Configuration 'test.config' values must not be null.", exception8.getMessage());
+        ConfigException exception9 = assertThrows(ConfigException.class, () -> allowAnyNonDuplicateValuesAndEmptyList.ensureValid("test.config", List.of("a", "a")));
+        assertEquals("Configuration 'test.config' values must not be duplicated.", exception9.getMessage());
+        ConfigException exception10 = assertThrows(ConfigException.class, () -> allowAnyNonDuplicateValuesAndEmptyList.ensureValid("test.config", List.of("")));
+        assertEquals("Configuration 'test.config' values must not be empty.", exception10.getMessage());
+        ConfigException exception11 = assertThrows(ConfigException.class, () -> allowAnyNonDuplicateValuesAndEmptyList.ensureValid("test.config", List.of("a", "", "b")));
+        assertEquals("Configuration 'test.config' values must not be empty.", exception11.getMessage());
+
+
+        ConfigDef.ValidList allowAnyNonDuplicateValues = ConfigDef.ValidList.anyNonDuplicateValues(false, false);
+        assertDoesNotThrow(() -> allowAnyNonDuplicateValues.ensureValid("test.config", List.of("a", "b", "c")));
+        ConfigException exception12 = assertThrows(ConfigException.class, () -> allowAnyNonDuplicateValues.ensureValid("test.config", null));
+        assertEquals("Configuration 'test.config' values must not be null.", exception12.getMessage());
+        ConfigException exception13 = assertThrows(ConfigException.class, () -> allowAnyNonDuplicateValues.ensureValid("test.config", List.of()));
+        assertEquals("Configuration 'test.config' must not be empty. Valid values include: any non-empty value", exception13.getMessage());
+        ConfigException exception14 = assertThrows(ConfigException.class, () -> allowAnyNonDuplicateValues.ensureValid("test.config", List.of("a", "a")));
+        assertEquals("Configuration 'test.config' values must not be duplicated.", exception14.getMessage());
+        ConfigException exception15 = assertThrows(ConfigException.class, () -> allowAnyNonDuplicateValues.ensureValid("test.config", List.of("")));
+        assertEquals("Configuration 'test.config' values must not be empty.", exception15.getMessage());
+        ConfigException exception16 = assertThrows(ConfigException.class, () -> allowAnyNonDuplicateValues.ensureValid("test.config", List.of("a", "", "b")));
+        assertEquals("Configuration 'test.config' values must not be empty.", exception16.getMessage());
+    }
+
+    @Test
+    public void testListValidatorIn() {
+        ConfigDef.ValidList allowEmptyValidator = ConfigDef.ValidList.in(true, "a", "b", "c");
+        assertDoesNotThrow(() -> allowEmptyValidator.ensureValid("test.config", List.of("a", "b")));
+        assertDoesNotThrow(() -> allowEmptyValidator.ensureValid("test.config", List.of()));
+        ConfigException exception1 = assertThrows(ConfigException.class, () -> allowEmptyValidator.ensureValid("test.config", null));
+        assertEquals("Configuration 'test.config' values must not be null.", exception1.getMessage());
+        ConfigException exception2 = assertThrows(ConfigException.class, () -> allowEmptyValidator.ensureValid("test.config", List.of("d")));
+        assertEquals("Invalid value d for configuration test.config: String must be one of: a, b, c", exception2.getMessage());
+        ConfigException exception3 = assertThrows(ConfigException.class, () -> allowEmptyValidator.ensureValid("test.config", List.of("a", "a")));
+        assertEquals("Configuration 'test.config' values must not be duplicated.", exception3.getMessage());
+
+        ConfigDef.ValidList notAllowEmptyValidator = ConfigDef.ValidList.in(false, "a", "b", "c");
+        assertDoesNotThrow(() -> notAllowEmptyValidator.ensureValid("test.config", List.of("a", "b")));
+        ConfigException exception4 = assertThrows(ConfigException.class, () -> notAllowEmptyValidator.ensureValid("test.config", List.of()));
+        assertEquals("Configuration 'test.config' must not be empty. Valid values include: [a, b, c]", exception4.getMessage());
+        ConfigException exception5 = assertThrows(ConfigException.class, () -> notAllowEmptyValidator.ensureValid("test.config", null));
+        assertEquals("Configuration 'test.config' values must not be null.", exception5.getMessage());
+        ConfigException exception6 = assertThrows(ConfigException.class, () -> notAllowEmptyValidator.ensureValid("test.config", List.of("d")));
+        assertEquals("Invalid value d for configuration test.config: String must be one of: a, b, c", exception6.getMessage());
+        ConfigException exception7 = assertThrows(ConfigException.class, () -> notAllowEmptyValidator.ensureValid("test.config", List.of("a", "a")));
+        assertEquals("Configuration 'test.config' values must not be duplicated.", exception7.getMessage());
+    }
+
+    @Test
+    public void testParsedValueWillRemoveDuplicatesInValidList() {
+        ConfigDef def = new ConfigDef()
+            .define(
+                "list",
+                Type.LIST,
+                List.of(),
+                ConfigDef.ValidList.anyNonDuplicateValues(true, true),
+                Importance.HIGH,
+                "list doc"
+            );
+
+        Map<String, String> props = new HashMap<>();
+        props.put("list", "a,b,c,a,b");
+
+        Map<String, Object> parsed = def.parse(props);
+        List<String> expectedList = List.of("a", "b", "c");
+        assertEquals(expectedList, parsed.get("list"));
+    }
 }

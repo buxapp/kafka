@@ -39,10 +39,12 @@ import org.apache.kafka.streams.state.RocksDBConfigSetter;
 import org.apache.kafka.streams.state.internals.ThreadCache;
 import org.apache.kafka.streams.state.internals.ThreadCache.DirtyEntryFlushListener;
 import org.apache.kafka.test.MockKeyValueStore;
-import org.junit.Before;
-import org.junit.Test;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Properties;
 
 import static org.apache.kafka.test.StreamsTestUtils.getStreamsConfig;
@@ -51,18 +53,18 @@ import static org.hamcrest.CoreMatchers.nullValue;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.emptyIterable;
 import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertThrows;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class AbstractProcessorContextTest {
 
     private final MockStreamsMetrics metrics = new MockStreamsMetrics(new Metrics());
-    private final AbstractProcessorContext context = new TestProcessorContext(metrics);
+    private final AbstractProcessorContext<?, ?> context = new TestProcessorContext(metrics);
     private final MockKeyValueStore stateStore = new MockKeyValueStore("store", false);
     private final Headers headers = new RecordHeaders(new Header[]{new RecordHeader("key", "value".getBytes())});
     private final ProcessorRecordContext recordContext = new ProcessorRecordContext(10, System.currentTimeMillis(), 1, "foo", headers);
 
-    @Before
+    @BeforeEach
     public void before() {
         context.setRecordContext(recordContext);
     }
@@ -217,6 +219,14 @@ public class AbstractProcessorContextTest {
         public Cancellable schedule(final Duration interval,
                                     final PunctuationType type,
                                     final Punctuator callback) throws IllegalArgumentException {
+            return null;
+        }
+
+        @Override
+        public Cancellable schedule(final Instant startTime,
+                                    final Duration interval,
+                                    final PunctuationType type,
+                                    final Punctuator callback) {
             return null;
         }
 

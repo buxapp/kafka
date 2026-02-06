@@ -19,8 +19,10 @@ package org.apache.kafka.image;
 
 import org.apache.kafka.common.metadata.AccessControlEntryRecord;
 import org.apache.kafka.common.metadata.BrokerRegistrationChangeRecord;
+import org.apache.kafka.common.metadata.ClearElrRecord;
 import org.apache.kafka.common.metadata.ClientQuotaRecord;
 import org.apache.kafka.common.metadata.ConfigRecord;
+import org.apache.kafka.common.metadata.DelegationTokenRecord;
 import org.apache.kafka.common.metadata.FeatureLevelRecord;
 import org.apache.kafka.common.metadata.FenceBrokerRecord;
 import org.apache.kafka.common.metadata.MetadataRecordType;
@@ -28,7 +30,9 @@ import org.apache.kafka.common.metadata.PartitionChangeRecord;
 import org.apache.kafka.common.metadata.PartitionRecord;
 import org.apache.kafka.common.metadata.ProducerIdsRecord;
 import org.apache.kafka.common.metadata.RegisterBrokerRecord;
+import org.apache.kafka.common.metadata.RegisterControllerRecord;
 import org.apache.kafka.common.metadata.RemoveAccessControlEntryRecord;
+import org.apache.kafka.common.metadata.RemoveDelegationTokenRecord;
 import org.apache.kafka.common.metadata.RemoveTopicRecord;
 import org.apache.kafka.common.metadata.RemoveUserScramCredentialRecord;
 import org.apache.kafka.common.metadata.TopicRecord;
@@ -75,6 +79,8 @@ public final class MetadataDelta {
     private AclsDelta aclsDelta = null;
 
     private ScramDelta scramDelta = null;
+
+    private DelegationTokenDelta delegationTokenDelta = null;
 
     public MetadataDelta(MetadataImage image) {
         this.image = image;
@@ -158,6 +164,15 @@ public final class MetadataDelta {
         return scramDelta;
     }
 
+    public DelegationTokenDelta delegationTokenDelta() {
+        return delegationTokenDelta;
+    }
+
+    public DelegationTokenDelta getOrCreateDelegationTokenDelta() {
+        if (delegationTokenDelta == null) delegationTokenDelta = new DelegationTokenDelta(image.delegationTokens());
+        return delegationTokenDelta;
+    }
+
     public Optional<MetadataVersion> metadataVersionChanged() {
         if (featuresDelta == null) {
             return Optional.empty();
@@ -196,6 +211,9 @@ public final class MetadataDelta {
             case REMOVE_TOPIC_RECORD:
                 replay((RemoveTopicRecord) record);
                 break;
+            case DELEGATION_TOKEN_RECORD:
+                replay((DelegationTokenRecord) record);
+                break;
             case USER_SCRAM_CREDENTIAL_RECORD:
                 replay((UserScramCredentialRecord) record);
                 break;
@@ -214,11 +232,17 @@ public final class MetadataDelta {
             case ACCESS_CONTROL_ENTRY_RECORD:
                 replay((AccessControlEntryRecord) record);
                 break;
+            case CLEAR_ELR_RECORD:
+                replay((ClearElrRecord) record);
+                break;
             case REMOVE_ACCESS_CONTROL_ENTRY_RECORD:
                 replay((RemoveAccessControlEntryRecord) record);
                 break;
             case REMOVE_USER_SCRAM_CREDENTIAL_RECORD:
                 replay((RemoveUserScramCredentialRecord) record);
+                break;
+            case REMOVE_DELEGATION_TOKEN_RECORD:
+                replay((RemoveDelegationTokenRecord) record);
                 break;
             case NO_OP_RECORD:
                 /* NoOpRecord is an empty record and doesn't need to be replayed beyond
@@ -226,7 +250,12 @@ public final class MetadataDelta {
                  */
                 break;
             case ZK_MIGRATION_STATE_RECORD:
-                // TODO handle this
+                // In 4.0, although migration is no longer supported and ZK has been removed from Kafka,
+                // users might migrate from ZK to KRaft in version 3.x and then perform a rolling upgrade to 4.0.
+                // Therefore, this case needs to be retained but will be a no-op.
+                break;
+            case REGISTER_CONTROLLER_RECORD:
+                replay((RegisterControllerRecord) record);
                 break;
             default:
                 throw new RuntimeException("Unknown metadata record type " + type);
@@ -253,6 +282,10 @@ public final class MetadataDelta {
         getOrCreateConfigsDelta().replay(record);
     }
 
+    public void replay(ClearElrRecord record) {
+        getOrCreateTopicsDelta().replay(record);
+    }
+
     public void replay(PartitionChangeRecord record) {
         getOrCreateTopicsDelta().replay(record);
     }
@@ -270,6 +303,14 @@ public final class MetadataDelta {
         getOrCreateConfigsDelta().replay(record, topicName);
     }
 
+    public void replay(DelegationTokenRecord record) {
+        getOrCreateDelegationTokenDelta().replay(record);
+    }
+
+    public void replay(RemoveDelegationTokenRecord record) {
+        getOrCreateDelegationTokenDelta().replay(record);
+    }
+
     public void replay(UserScramCredentialRecord record) {
         getOrCreateScramDelta().replay(record);
     }
@@ -285,6 +326,7 @@ public final class MetadataDelta {
             getOrCreateProducerIdsDelta().handleMetadataVersionChange(changedMetadataVersion);
             getOrCreateAclsDelta().handleMetadataVersionChange(changedMetadataVersion);
             getOrCreateScramDelta().handleMetadataVersionChange(changedMetadataVersion);
+            getOrCreateDelegationTokenDelta().handleMetadataVersionChange(changedMetadataVersion);
         });
     }
 
@@ -312,6 +354,10 @@ public final class MetadataDelta {
         getOrCreateScramDelta().replay(record);
     }
 
+    public void replay(RegisterControllerRecord record) {
+        getOrCreateClusterDelta().replay(record);
+    }
+
     /**
      * Create removal deltas for anything which was in the base image, but which was not
      * referenced in the snapshot records we just applied.
@@ -325,6 +371,7 @@ public final class MetadataDelta {
         getOrCreateProducerIdsDelta().finishSnapshot();
         getOrCreateAclsDelta().finishSnapshot();
         getOrCreateScramDelta().finishSnapshot();
+        getOrCreateDelegationTokenDelta().finishSnapshot();
     }
 
     public MetadataImage apply(MetadataProvenance provenance) {
@@ -376,6 +423,12 @@ public final class MetadataDelta {
         } else {
             newScram = scramDelta.apply();
         }
+        DelegationTokenImage newDelegationTokens;
+        if (delegationTokenDelta == null) {
+            newDelegationTokens = image.delegationTokens();
+        } else {
+            newDelegationTokens = delegationTokenDelta.apply();
+        }
         return new MetadataImage(
             provenance,
             newFeatures,
@@ -385,7 +438,8 @@ public final class MetadataDelta {
             newClientQuotas,
             newProducerIds,
             newAcls,
-            newScram
+            newScram,
+            newDelegationTokens
         );
     }
 
@@ -400,6 +454,7 @@ public final class MetadataDelta {
             ", producerIdsDelta=" + producerIdsDelta +
             ", aclsDelta=" + aclsDelta +
             ", scramDelta=" + scramDelta +
+            ", delegationTokenDelta=" + delegationTokenDelta +
             ')';
     }
 }
