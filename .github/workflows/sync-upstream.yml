@@ -152,7 +152,6 @@ jobs:
                 gh issue create \
                   --repo "${{ github.repository }}" \
                   --title "Merge Conflict: Resolve using GitHub Copilot Workspace on $branch" \
-                  --label "sync,conflict,copilot-workspace" \
                   --body-file "/tmp/merge_conflict_issue_${branch}_$$.md" \
                   || echo "Failed to create issue"
               fi
