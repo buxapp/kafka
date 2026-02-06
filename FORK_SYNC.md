@@ -170,7 +170,7 @@ git push origin <branch> --force-with-lease
 2. **Preserve BUX commits**: Ensure BUX-specific commits remain on top after merge
 3. **Monitor CI/CD**: Check that builds pass after synchronization
 4. **Update version carefully**: Maintain the `-consumergroupfix` suffix in version strings
-5. **Document changes**: If new patches are added, document them in this README
+5. **Document changes**: If new patches are added, document them in this document
 
 ## Support
 

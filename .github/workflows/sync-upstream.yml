@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
+      issues: write
 
     steps:
       - name: Checkout repository
@@ -84,10 +84,9 @@ jobs:
             echo "Upstream HEAD: $UPSTREAM_COMMIT"
 
             # Check if we're behind upstream
-            git merge-base --is-ancestor "$UPSTREAM_COMMIT" HEAD
+            git merge-base --is-ancestor HEAD "$UPSTREAM_COMMIT"
             if [ $? -eq 0 ]; then
-              echo "Branch $branch is up to date with upstream"
-            else
+              # Local branch is an ancestor of upstream, we can fast-forward or merge
               # Try to merge upstream changes
               echo "Merging upstream/$branch into $branch..."
               if git merge "upstream/$branch" -m "Sync $branch with apache/kafka upstream"; then
@@ -118,6 +117,8 @@ jobs:
                   --label "sync,conflict" \
                   || echo "Failed to create issue"
               fi
+            else
+              echo "Branch $branch is up to date or ahead of upstream"
             fi
 
             echo "::endgroup::"
