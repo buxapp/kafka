@@ -219,7 +219,30 @@ Update this document (CONSUMERGROUPFIX.md) to include information about the new 
 
 Conflicts can occur during synchronization when upstream changes overlap with BUX patches.
 
-### Conflict Resolution Process
+### Automated Conflict Notification with GitHub Copilot Workspace
+
+When the automated sync workflow encounters a merge conflict, it now:
+
+1. **Aborts the merge** to preserve repository state
+2. **Creates a GitHub issue** with the label `copilot-workspace`
+3. **Provides context** including branch names and commit hashes
+4. **Enables "Open in Workspace" button** for AI-assisted resolution
+
+#### Using GitHub Copilot Workspace (Recommended)
+
+When a merge conflict issue is created, you'll see an **"Open in Workspace"** button in the Development section on the right side of the issue page.
+
+**Steps:**
+1. Click the "Open in Workspace" button on the issue
+2. Review GitHub Copilot's proposed resolution plan
+3. **Verify BUX-specific patches are preserved** (critical!)
+4. Click "Implement" to apply the changes
+5. Review and merge the generated pull request
+6. Close the original conflict issue
+
+**Important**: Always carefully review Copilot's proposed changes to ensure consumergroupfix patches are not removed or modified incorrectly.
+
+### Manual Conflict Resolution Process
 
 1. **Identify conflicts**:
    ```bash
@@ -364,7 +387,9 @@ git push origin <branch> --force-with-lease
 ## Troubleshooting
 
 ### Issue: Merge conflicts during automatic sync
-**Solution**: The workflow creates a GitHub issue. Resolve manually following the conflict resolution process above.
+**Solution**: 
+- **Option 1 (Recommended)**: The workflow creates a GitHub issue with `copilot-workspace` label. Click "Open in Workspace" button to use AI-assisted resolution.
+- **Option 2**: Resolve manually following the manual conflict resolution process above.
 
 ### Issue: Tests fail after sync
 **Solution**: 

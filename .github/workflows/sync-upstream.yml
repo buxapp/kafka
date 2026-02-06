@@ -109,9 +109,6 @@ jobs:
                 echo "::error::Manual intervention required to resolve conflicts"
                 git merge --abort
 
-                # Get the list of conflicting files
-                echo "Identifying conflicting files..."
-                
                 # Create an issue to notify about the conflict and trigger Copilot agent
                 echo "Creating notification issue with Copilot Workspace link..."
                 
@@ -153,7 +150,7 @@ jobs:
                 
                 # Create issue with copilot-workspace label
                 gh issue create \
-                  --title "🤖 Copilot Agent: Resolve merge conflict on $branch" \
+                  --title "🤖 GitHub Copilot: Resolve merge conflict on $branch" \
                   --label "sync,conflict,copilot-workspace" \
                   --body-file /tmp/merge_conflict_issue.md \
                   || echo "Failed to create issue"
