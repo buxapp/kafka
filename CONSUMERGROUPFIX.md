@@ -224,7 +224,7 @@ Conflicts can occur during synchronization when upstream changes overlap with BU
 When the automated sync workflow encounters a merge conflict, it now:
 
 1. **Aborts the merge** to preserve repository state
-2. **Creates a GitHub issue** with the label `copilot-workspace`
+2. **Creates a GitHub issue** with title: `Merge Conflict: Resolve using GitHub Copilot Workspace on <branch>`
 3. **Provides context** including branch names and commit hashes
 4. **Enables "Open in Workspace" button** for AI-assisted resolution
 
