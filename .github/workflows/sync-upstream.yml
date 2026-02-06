@@ -17,24 +17,24 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-      
+
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-      
+
       - name: Add upstream remote
         run: |
           git remote add upstream https://github.com/apache/kafka.git || true
           git remote -v
-      
+
       - name: Determine branches to sync
         id: branches
         run: |
@@ -44,25 +44,25 @@ jobs:
             BRANCHES="trunk,3.9"
           fi
           echo "branches=$BRANCHES" >> $GITHUB_OUTPUT
-      
+
       - name: Sync branches
         env:
           BRANCHES: ${{ steps.branches.outputs.branches }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           IFS=',' read -ra BRANCH_ARRAY <<< "$BRANCHES"
-          
+
           for branch in "${BRANCH_ARRAY[@]}"; do
             branch=$(echo "$branch" | xargs)  # trim whitespace
             echo "::group::Syncing branch: $branch"
-            
+
             # Fetch latest from upstream
             echo "Fetching upstream/$branch..."
             git fetch upstream "$branch" || {
               echo "::error::Failed to fetch upstream/$branch"
               continue
             }
-            
+
             # Check if branch exists locally
             if git show-ref --verify --quiet "refs/heads/$branch"; then
               echo "Branch $branch exists locally"
@@ -74,15 +74,15 @@ jobs:
               echo "::warning::Branch $branch does not exist, skipping"
               continue
             fi
-            
+
             # Get current commit before sync
             BEFORE_COMMIT=$(git rev-parse HEAD)
             echo "Current HEAD: $BEFORE_COMMIT"
-            
+
             # Check if there are local BUX commits ahead of upstream
             UPSTREAM_COMMIT=$(git rev-parse "upstream/$branch")
             echo "Upstream HEAD: $UPSTREAM_COMMIT"
-            
+
             # Check if we're behind upstream
             git merge-base --is-ancestor "$UPSTREAM_COMMIT" HEAD
             if [ $? -eq 0 ]; then
@@ -93,7 +93,7 @@ jobs:
               if git merge "upstream/$branch" -m "Sync $branch with apache/kafka upstream"; then
                 echo "Merge successful"
                 AFTER_COMMIT=$(git rev-parse HEAD)
-                
+
                 # Push if there are new commits
                 if [ "$BEFORE_COMMIT" != "$AFTER_COMMIT" ]; then
                   echo "Pushing changes to origin/$branch..."
@@ -109,7 +109,7 @@ jobs:
                 echo "::error::Merge conflict detected on $branch"
                 echo "::error::Manual intervention required to resolve conflicts"
                 git merge --abort
-                
+
                 # Create an issue to notify about the conflict
                 echo "Creating notification issue about merge conflict..."
                 gh issue create \
@@ -119,10 +119,10 @@ jobs:
                   || echo "Failed to create issue"
               fi
             fi
-            
+
             echo "::endgroup::"
           done
-      
+
       - name: Summary
         if: always()
         run: |
