@@ -20,8 +20,8 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerInterceptor;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
-import org.apache.kafka.common.ClusterResourceListener;
 import org.apache.kafka.common.ClusterResource;
+import org.apache.kafka.common.ClusterResourceListener;
 import org.apache.kafka.common.config.ConfigException;
 
 import java.util.Map;
@@ -110,6 +110,7 @@ public class MockProducerInterceptor implements ClusterResourceListener, Produce
         ON_SUCCESS_COUNT.set(0);
         ON_ERROR_COUNT.set(0);
         ON_ERROR_WITH_METADATA_COUNT.set(0);
+        THROW_ON_CONFIG_EXCEPTION_THRESHOLD.set(0);
         CLUSTER_META.set(null);
         CLUSTER_ID_BEFORE_ON_ACKNOWLEDGEMENT.set(NO_CLUSTER_ID);
     }

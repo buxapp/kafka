@@ -19,18 +19,13 @@ package org.apache.kafka.metadata;
 
 import java.util.Collections;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-
 
 /**
  * A map of feature names to their supported versions.
  */
-public class FinalizedControllerFeatures {
-    private final Map<String, Short> featureMap;
-    private final long epoch;
-
+public record FinalizedControllerFeatures(Map<String, Short> featureMap, long epoch) {
     public FinalizedControllerFeatures(Map<String, Short> featureMap, long epoch) {
         this.featureMap = Collections.unmodifiableMap(featureMap);
         this.epoch = epoch;
@@ -40,33 +35,11 @@ public class FinalizedControllerFeatures {
         return Optional.ofNullable(featureMap.get(name));
     }
 
+    public short versionOrDefault(String name, short defaultValue) {
+        return featureMap.getOrDefault(name, defaultValue);
+    }
+
     public Set<String> featureNames() {
         return featureMap.keySet();
-    }
-
-    public long epoch() {
-        return epoch;
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(featureMap, epoch);
-    }
-
-    @Override
-    public boolean equals(Object o) {
-        if (!(o instanceof FinalizedControllerFeatures)) return false;
-        FinalizedControllerFeatures other = (FinalizedControllerFeatures) o;
-        return featureMap.equals(other.featureMap) && epoch == other.epoch;
-    }
-
-    @Override
-    public String toString() {
-        StringBuilder bld = new StringBuilder();
-        bld.append("{");
-        bld.append("featureMap=").append(featureMap.toString());
-        bld.append(", epoch=").append(epoch);
-        bld.append("}");
-        return bld.toString();
     }
 }

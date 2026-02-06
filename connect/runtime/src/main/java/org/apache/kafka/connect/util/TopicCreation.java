@@ -17,10 +17,7 @@
 package org.apache.kafka.connect.util;
 
 import org.apache.kafka.connect.runtime.WorkerConfig;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -33,9 +30,8 @@ import static org.apache.kafka.connect.runtime.TopicCreationConfig.DEFAULT_TOPIC
  * enabled for source connectors at the worker and the connector configurations.
  */
 public class TopicCreation {
-    private static final Logger log = LoggerFactory.getLogger(TopicCreation.class);
     private static final TopicCreation EMPTY =
-            new TopicCreation(false, null, Collections.emptyMap(), Collections.emptySet());
+            new TopicCreation(false, null, Map.of(), Set.of());
 
     private final boolean isTopicCreationEnabled;
     private final TopicCreationGroup defaultTopicGroup;

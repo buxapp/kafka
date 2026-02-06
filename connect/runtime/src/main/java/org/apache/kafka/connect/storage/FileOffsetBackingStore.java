@@ -20,6 +20,7 @@ import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.runtime.WorkerConfig;
 import org.apache.kafka.connect.runtime.standalone.StandaloneConfig;
 import org.apache.kafka.connect.util.SafeObjectInputStream;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,7 +31,6 @@ import java.io.ObjectOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -111,6 +111,6 @@ public class FileOffsetBackingStore extends MemoryOffsetBackingStore {
 
     @Override
     public Set<Map<String, Object>> connectorPartitions(String connectorName) {
-        return connectorPartitions.getOrDefault(connectorName, Collections.emptySet());
+        return connectorPartitions.getOrDefault(connectorName, Set.of());
     }
 }

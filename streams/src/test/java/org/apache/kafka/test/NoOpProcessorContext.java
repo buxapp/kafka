@@ -42,6 +42,7 @@ import org.apache.kafka.streams.state.internals.ThreadCache;
 import org.apache.kafka.streams.state.internals.ThreadCache.DirtyEntryFlushListener;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
@@ -80,13 +81,21 @@ public class NoOpProcessorContext extends AbstractProcessorContext<Object, Objec
     }
 
     @Override
+    public Cancellable schedule(final Instant startTime,
+                                final Duration interval,
+                                final PunctuationType type,
+                                final Punctuator callback) {
+        return null;
+    }
+
+    @Override
     public <K, V> void forward(final Record<K, V> record) {
-        forward(record.key(), record.value());
+        forwardedValues.put(record.key(), record.value());
     }
 
     @Override
     public <K, V> void forward(final Record<K, V> record, final String childName) {
-        forward(record.key(), record.value());
+        forwardedValues.put(record.key(), record.value());
     }
 
     @Override
@@ -96,7 +105,7 @@ public class NoOpProcessorContext extends AbstractProcessorContext<Object, Objec
 
     @Override
     public <K, V> void forward(final K key, final V value, final To to) {
-        forward(key, value);
+        forwardedValues.put(key, value);
     }
 
     @Override

@@ -16,16 +16,17 @@
  */
 package org.apache.kafka.common.protocol;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import org.apache.kafka.common.errors.ApiException;
+import org.apache.kafka.common.errors.TimeoutException;
+
+import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;
 import java.util.Set;
 
-import org.apache.kafka.common.errors.ApiException;
-import org.apache.kafka.common.errors.TimeoutException;
-import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 public class ErrorsTest {
 
@@ -52,7 +53,7 @@ public class ErrorsTest {
     public void testExceptionsAreNotGeneric() {
         for (Errors error : Errors.values()) {
             if (error != Errors.NONE)
-                assertNotEquals(error.exception().getClass(), ApiException.class, "Generic ApiException should not be used");
+                assertNotEquals(ApiException.class, error.exception().getClass(), "Generic ApiException should not be used");
         }
     }
 

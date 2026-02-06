@@ -25,7 +25,6 @@ import org.apache.kafka.streams.KeyValue;
 import org.apache.kafka.streams.errors.ProcessorStateException;
 import org.apache.kafka.streams.kstream.internals.Change;
 import org.apache.kafka.streams.kstream.internals.WrappingNullableUtils;
-import org.apache.kafka.streams.processor.ProcessorContext;
 import org.apache.kafka.streams.processor.StateStore;
 import org.apache.kafka.streams.processor.StateStoreContext;
 import org.apache.kafka.streams.processor.TaskId;
@@ -40,6 +39,7 @@ import org.apache.kafka.streams.query.Query;
 import org.apache.kafka.streams.query.QueryConfig;
 import org.apache.kafka.streams.query.QueryResult;
 import org.apache.kafka.streams.query.RangeQuery;
+import org.apache.kafka.streams.query.ResultOrder;
 import org.apache.kafka.streams.query.internals.InternalQueryResultUtil;
 import org.apache.kafka.streams.state.KeyValueIterator;
 import org.apache.kafka.streams.state.KeyValueStore;
@@ -48,16 +48,20 @@ import org.apache.kafka.streams.state.internals.StoreQueryUtils.QueryHandler;
 import org.apache.kafka.streams.state.internals.metrics.StateStoreMetrics;
 
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableSet;
+import java.util.NoSuchElementException;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentSkipListSet;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Function;
 
 import static org.apache.kafka.common.utils.Utils.mkEntry;
 import static org.apache.kafka.common.utils.Utils.mkMap;
-import static org.apache.kafka.streams.kstream.internals.WrappingNullableUtils.prepareKeySerde;
 import static org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl.maybeMeasureLatency;
-import static org.apache.kafka.streams.state.internals.StoreQueryUtils.getDeserializeValue;
 
 /**
  * A Metered {@link KeyValueStore} wrapper that is used for recording operation metrics, and hence its
@@ -70,7 +74,7 @@ import static org.apache.kafka.streams.state.internals.StoreQueryUtils.getDeseri
  */
 public class MeteredKeyValueStore<K, V>
     extends WrappedStateStore<KeyValueStore<Bytes, byte[]>, K, V>
-    implements KeyValueStore<K, V> {
+    implements KeyValueStore<K, V>, MeteredStateStore {
 
     final Serde<K> keySerde;
     final Serde<V> valueSerde;
@@ -88,9 +92,15 @@ public class MeteredKeyValueStore<K, V>
     private Sensor prefixScanSensor;
     private Sensor flushSensor;
     private Sensor e2eLatencySensor;
-    protected InternalProcessorContext context;
+    protected Sensor iteratorDurationSensor;
+    protected InternalProcessorContext<?, ?> internalContext;
     private StreamsMetricsImpl streamsMetrics;
     private TaskId taskId;
+    private Sensor restoreSensor;
+
+    protected LongAdder numOpenIterators = new LongAdder();
+    protected NavigableSet<MeteredIterator> openIterators = new ConcurrentSkipListSet<>(Comparator.comparingLong(MeteredIterator::startTimestamp));
+
 
     @SuppressWarnings("rawtypes")
     private final Map<Class, QueryHandler> queryHandlers =
@@ -117,37 +127,19 @@ public class MeteredKeyValueStore<K, V>
         this.valueSerde = valueSerde;
     }
 
-    @Deprecated
     @Override
-    public void init(final ProcessorContext context,
+    public void init(final StateStoreContext stateStoreContext,
                      final StateStore root) {
-        this.context = context instanceof InternalProcessorContext ? (InternalProcessorContext) context : null;
-        taskId = context.taskId();
-        initStoreSerde(context);
-        streamsMetrics = (StreamsMetricsImpl) context.metrics();
+        internalContext = stateStoreContext instanceof InternalProcessorContext ? (InternalProcessorContext<?, ?>) stateStoreContext : null;
+        taskId = stateStoreContext.taskId();
+        initStoreSerde(stateStoreContext);
+        streamsMetrics = (StreamsMetricsImpl) stateStoreContext.metrics();
 
         registerMetrics();
-        final Sensor restoreSensor =
-            StateStoreMetrics.restoreSensor(taskId.toString(), metricsScope, name(), streamsMetrics);
 
-        // register and possibly restore the state from the logs
-        maybeMeasureLatency(() -> super.init(context, root), time, restoreSensor);
-    }
+        restoreSensor = StateStoreMetrics.restoreSensor(taskId.toString(), metricsScope, name(), streamsMetrics);
 
-    @Override
-    public void init(final StateStoreContext context,
-                     final StateStore root) {
-        this.context = context instanceof InternalProcessorContext ? (InternalProcessorContext<?, ?>) context : null;
-        taskId = context.taskId();
-        initStoreSerde(context);
-        streamsMetrics = (StreamsMetricsImpl) context.metrics();
-
-        registerMetrics();
-        final Sensor restoreSensor =
-            StateStoreMetrics.restoreSensor(taskId.toString(), metricsScope, name(), streamsMetrics);
-
-        // register and possibly restore the state from the logs
-        maybeMeasureLatency(() -> super.init(context, root), time, restoreSensor);
+        super.init(stateStoreContext, root);
     }
 
     private void registerMetrics() {
@@ -161,32 +153,34 @@ public class MeteredKeyValueStore<K, V>
         flushSensor = StateStoreMetrics.flushSensor(taskId.toString(), metricsScope, name(), streamsMetrics);
         deleteSensor = StateStoreMetrics.deleteSensor(taskId.toString(), metricsScope, name(), streamsMetrics);
         e2eLatencySensor = StateStoreMetrics.e2ELatencySensor(taskId.toString(), metricsScope, name(), streamsMetrics);
+        iteratorDurationSensor = StateStoreMetrics.iteratorDurationSensor(taskId.toString(), metricsScope, name(), streamsMetrics);
+        StateStoreMetrics.addNumOpenIteratorsGauge(taskId.toString(), metricsScope, name(), streamsMetrics,
+                (config, now) -> numOpenIterators.sum());
+        StateStoreMetrics.addOldestOpenIteratorGauge(taskId.toString(), metricsScope, name(), streamsMetrics,
+            (config, now) -> {
+                try {
+                    final Iterator<MeteredIterator> iter = openIterators.iterator();
+                    return iter.hasNext() ? iter.next().startTimestamp() : 0L;
+                } catch (final NoSuchElementException e) {
+                    return 0L;
+                }
+            });
+    }
+
+    @Override
+    public void recordRestoreTime(final long restoreTimeNs) {
+        restoreSensor.record(restoreTimeNs);
     }
 
     protected Serde<V> prepareValueSerdeForStore(final Serde<V> valueSerde, final SerdeGetter getter) {
         return WrappingNullableUtils.prepareValueSerde(valueSerde, getter);
     }
 
-
-    @Deprecated
-    private void initStoreSerde(final ProcessorContext context) {
+    protected void initStoreSerde(final StateStoreContext context) {
         final String storeName = name();
         final String changelogTopic = ProcessorContextUtils.changelogFor(context, storeName, Boolean.FALSE);
-        serdes = new StateSerdes<>(
-            changelogTopic,
-            prepareKeySerde(keySerde, new SerdeGetter(context)),
-            prepareValueSerdeForStore(valueSerde, new SerdeGetter(context))
-        );
-    }
-
-    private void initStoreSerde(final StateStoreContext context) {
-        final String storeName = name();
-        final String changelogTopic = ProcessorContextUtils.changelogFor(context, storeName, Boolean.FALSE);
-        serdes = new StateSerdes<>(
-            changelogTopic,
-            prepareKeySerde(keySerde, new SerdeGetter(context)),
-            prepareValueSerdeForStore(valueSerde, new SerdeGetter(context))
-        );
+        serdes = StoreSerdeInitializer.prepareStoreSerde(
+            context, storeName, changelogTopic, keySerde, valueSerde, this::prepareValueSerdeForStore);
     }
 
     @SuppressWarnings("unchecked")
@@ -200,7 +194,8 @@ public class MeteredKeyValueStore<K, V>
                     record.withKey(serdes.keyFrom(record.key()))
                         .withValue(new Change<>(
                             record.value().newValue != null ? serdes.valueFrom(record.value().newValue) : null,
-                            record.value().oldValue != null ? serdes.valueFrom(record.value().oldValue) : null
+                            record.value().oldValue != null ? serdes.valueFrom(record.value().oldValue) : null,
+                            record.value().isLatest
                         ))
                 ),
                 sendOldValues);
@@ -246,24 +241,23 @@ public class MeteredKeyValueStore<K, V>
     }
 
     @SuppressWarnings("unchecked")
-    protected <R> QueryResult<R> runRangeQuery(final Query<R> query,
-                                               final PositionBound positionBound,
-                                               final QueryConfig config) {
+    private <R> QueryResult<R> runRangeQuery(final Query<R> query,
+                                             final PositionBound positionBound,
+                                             final QueryConfig config) {
 
         final QueryResult<R> result;
         final RangeQuery<K, V> typedQuery = (RangeQuery<K, V>) query;
-        final RangeQuery<Bytes, byte[]> rawRangeQuery;
-        if (typedQuery.getLowerBound().isPresent() && typedQuery.getUpperBound().isPresent()) {
-            rawRangeQuery = RangeQuery.withRange(
-                keyBytes(typedQuery.getLowerBound().get()),
-                keyBytes(typedQuery.getUpperBound().get())
-            );
-        } else if (typedQuery.getLowerBound().isPresent()) {
-            rawRangeQuery = RangeQuery.withLowerBound(keyBytes(typedQuery.getLowerBound().get()));
-        } else if (typedQuery.getUpperBound().isPresent()) {
-            rawRangeQuery = RangeQuery.withUpperBound(keyBytes(typedQuery.getUpperBound().get()));
-        } else {
-            rawRangeQuery = RangeQuery.withNoBounds();
+        RangeQuery<Bytes, byte[]> rawRangeQuery;
+        final ResultOrder order = typedQuery.resultOrder();
+        rawRangeQuery = RangeQuery.withRange(
+                keyBytes(typedQuery.getLowerBound().orElse(null)),
+                keyBytes(typedQuery.getUpperBound().orElse(null))
+        );
+        if (order.equals(ResultOrder.DESCENDING)) {
+            rawRangeQuery = rawRangeQuery.withDescendingKeys();
+        }
+        if (order.equals(ResultOrder.ASCENDING)) {
+            rawRangeQuery = rawRangeQuery.withAscendingKeys();
         }
         final QueryResult<KeyValueIterator<Bytes, byte[]>> rawResult =
             wrapped().query(rawRangeQuery, positionBound, config);
@@ -272,7 +266,7 @@ public class MeteredKeyValueStore<K, V>
             final KeyValueIterator<K, V> resultIterator = new MeteredKeyValueTimestampedIterator(
                 iterator,
                 getSensor,
-                getDeserializeValue(serdes, wrapped())
+                StoreQueryUtils.deserializeValue(serdes, wrapped())
             );
             final QueryResult<KeyValueIterator<K, V>> typedQueryResult =
                 InternalQueryResultUtil.copyAndSubstituteDeserializedResult(
@@ -287,11 +281,10 @@ public class MeteredKeyValueStore<K, V>
         return result;
     }
 
-
     @SuppressWarnings("unchecked")
-    protected <R> QueryResult<R> runKeyQuery(final Query<R> query,
-                                             final PositionBound positionBound,
-                                             final QueryConfig config) {
+    private  <R> QueryResult<R> runKeyQuery(final Query<R> query,
+                                            final PositionBound positionBound,
+                                            final QueryConfig config) {
         final QueryResult<R> result;
         final KeyQuery<K, V> typedKeyQuery = (KeyQuery<K, V>) query;
         final KeyQuery<Bytes, byte[]> rawKeyQuery =
@@ -299,7 +292,7 @@ public class MeteredKeyValueStore<K, V>
         final QueryResult<byte[]> rawResult =
             wrapped().query(rawKeyQuery, positionBound, config);
         if (rawResult.isSuccess()) {
-            final Function<byte[], V> deserializer = getDeserializeValue(serdes, wrapped());
+            final Function<byte[], V> deserializer = StoreQueryUtils.deserializeValue(serdes, wrapped());
             final V value = deserializer.apply(rawResult.getResult());
             final QueryResult<V> typedQueryResult =
                 InternalQueryResultUtil.copyAndSubstituteDeserializedResult(rawResult, value);
@@ -439,27 +432,36 @@ public class MeteredKeyValueStore<K, V>
         return byteEntries;
     }
 
-    private void maybeRecordE2ELatency() {
+    protected void maybeRecordE2ELatency() {
         // Context is null if the provided context isn't an implementation of InternalProcessorContext.
         // In that case, we _can't_ get the current timestamp, so we don't record anything.
-        if (e2eLatencySensor.shouldRecord() && context != null) {
+        if (e2eLatencySensor.shouldRecord() && internalContext != null) {
             final long currentTime = time.milliseconds();
-            final long e2eLatency =  currentTime - context.timestamp();
+            final long e2eLatency =  currentTime - internalContext.recordContext().timestamp();
             e2eLatencySensor.record(e2eLatency, currentTime);
         }
     }
 
-    private class MeteredKeyValueIterator implements KeyValueIterator<K, V> {
+    private class MeteredKeyValueIterator implements KeyValueIterator<K, V>, MeteredIterator {
 
         private final KeyValueIterator<Bytes, byte[]> iter;
         private final Sensor sensor;
         private final long startNs;
+        private final long startTimestamp;
 
         private MeteredKeyValueIterator(final KeyValueIterator<Bytes, byte[]> iter,
                                         final Sensor sensor) {
             this.iter = iter;
             this.sensor = sensor;
+            this.startTimestamp = time.milliseconds();
             this.startNs = time.nanoseconds();
+            numOpenIterators.increment();
+            openIterators.add(this);
+        }
+
+        @Override
+        public long startTimestamp() {
+            return startTimestamp;
         }
 
         @Override
@@ -480,7 +482,11 @@ public class MeteredKeyValueStore<K, V>
             try {
                 iter.close();
             } finally {
-                sensor.record(time.nanoseconds() - startNs);
+                final long duration = time.nanoseconds() - startNs;
+                sensor.record(duration);
+                iteratorDurationSensor.record(duration);
+                numOpenIterators.decrement();
+                openIterators.remove(this);
             }
         }
 
@@ -490,20 +496,31 @@ public class MeteredKeyValueStore<K, V>
         }
     }
 
-    private class MeteredKeyValueTimestampedIterator implements KeyValueIterator<K, V> {
+    private class MeteredKeyValueTimestampedIterator implements KeyValueIterator<K, V>, MeteredIterator {
 
         private final KeyValueIterator<Bytes, byte[]> iter;
         private final Sensor sensor;
         private final long startNs;
+        private final long startTimestamp;
         private final Function<byte[], V> valueDeserializer;
 
-        private MeteredKeyValueTimestampedIterator(final KeyValueIterator<Bytes, byte[]> iter,
-                                        final Sensor sensor,
-                                        final Function<byte[], V> valueDeserializer) {
+        private MeteredKeyValueTimestampedIterator(
+            final KeyValueIterator<Bytes, byte[]> iter,
+            final Sensor sensor,
+            final Function<byte[], V> valueDeserializer
+        ) {
             this.iter = iter;
             this.sensor = sensor;
             this.valueDeserializer = valueDeserializer;
+            this.startTimestamp = time.milliseconds();
             this.startNs = time.nanoseconds();
+            numOpenIterators.increment();
+            openIterators.add(this);
+        }
+
+        @Override
+        public long startTimestamp() {
+            return startTimestamp;
         }
 
         @Override
@@ -524,7 +541,11 @@ public class MeteredKeyValueStore<K, V>
             try {
                 iter.close();
             } finally {
-                sensor.record(time.nanoseconds() - startNs);
+                final long duration = time.nanoseconds() - startNs;
+                sensor.record(duration);
+                iteratorDurationSensor.record(duration);
+                numOpenIterators.decrement();
+                openIterators.remove(this);
             }
         }
 

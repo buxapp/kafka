@@ -24,8 +24,8 @@ import java.io.StringWriter;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @Timeout(120)
 public class CodeBufferTest {
@@ -41,10 +41,9 @@ public class CodeBufferTest {
         StringWriter stringWriter = new StringWriter();
         buffer.write(stringWriter);
         assertEquals(
-            stringWriter.toString(),
             String.format("public static void main(String[] args) throws Exception {%n") +
             String.format("    System.out.println(\"hello world\");%n") +
-            String.format("}%n"));
+            String.format("}%n"), stringWriter.toString());
     }
 
     @Test

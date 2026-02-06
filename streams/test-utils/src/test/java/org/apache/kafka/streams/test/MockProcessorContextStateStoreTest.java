@@ -22,6 +22,8 @@ import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.processor.StateStore;
 import org.apache.kafka.streams.processor.TaskId;
 import org.apache.kafka.streams.processor.api.MockProcessorContext;
+import org.apache.kafka.streams.processor.internals.InternalProcessorContext;
+import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
 import org.apache.kafka.streams.state.KeyValueBytesStoreSupplier;
 import org.apache.kafka.streams.state.KeyValueStore;
 import org.apache.kafka.streams.state.SessionBytesStoreSupplier;
@@ -31,6 +33,7 @@ import org.apache.kafka.streams.state.Stores;
 import org.apache.kafka.streams.state.WindowBytesStoreSupplier;
 import org.apache.kafka.streams.state.WindowStore;
 import org.apache.kafka.test.TestUtils;
+
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -48,6 +51,8 @@ import static org.apache.kafka.common.utils.Utils.mkEntry;
 import static org.apache.kafka.common.utils.Utils.mkMap;
 import static org.apache.kafka.common.utils.Utils.mkProperties;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class MockProcessorContextStateStoreTest {
 
@@ -150,7 +155,7 @@ public class MockProcessorContextStateStoreTest {
         return values.stream();
     }
 
-    @ParameterizedTest(name = "builder = {0}, timestamped = {1}, caching = {2}, logging = {3}")
+    @ParameterizedTest
     @MethodSource(value = "parameters")
     public void shouldEitherInitOrThrow(final StoreBuilder<StateStore> builder,
                                         final boolean timestamped,
@@ -161,7 +166,7 @@ public class MockProcessorContextStateStoreTest {
             final MockProcessorContext<Void, Void> context = new MockProcessorContext<>(
                 mkProperties(mkMap(
                     mkEntry(StreamsConfig.APPLICATION_ID_CONFIG, ""),
-                    mkEntry(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "")
+                    mkEntry(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "mock-localhost:9092")
                 )),
                 new TaskId(0, 0),
                 stateDir
@@ -173,7 +178,12 @@ public class MockProcessorContextStateStoreTest {
                     () -> store.init(context.getStateStoreContext(), store)
                 );
             } else {
-                store.init(context.getStateStoreContext(), store);
+                final InternalProcessorContext<?, ?> internalProcessorContext = mock(InternalProcessorContext.class);
+                when(internalProcessorContext.taskId()).thenReturn(context.taskId());
+                when(internalProcessorContext.stateDir()).thenReturn(stateDir);
+                when(internalProcessorContext.metrics()).thenReturn((StreamsMetricsImpl) context.metrics());
+                when(internalProcessorContext.appConfigs()).thenReturn(context.appConfigs());
+                store.init(internalProcessorContext, store);
                 store.close();
             }
         } finally {

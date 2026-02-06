@@ -26,11 +26,15 @@ import java.util.Optional;
  * Note: Any change to this class is considered public and requires a KIP.
  */
 public class ConsumerGroupMetadata {
-    final private String groupId;
-    final private int generationId;
-    final private String memberId;
-    final private Optional<String> groupInstanceId;
+    private final String groupId;
+    private final int generationId;
+    private final String memberId;
+    private final Optional<String> groupInstanceId;
 
+    /**
+     * @deprecated Since 4.2, please use {@link KafkaConsumer#groupMetadata()} instead. This class will be an interface in Kafka 5.0.
+     */
+    @Deprecated(since = "4.2", forRemoval = true)
     public ConsumerGroupMetadata(String groupId,
                                  int generationId,
                                  String memberId,
@@ -41,6 +45,10 @@ public class ConsumerGroupMetadata {
         this.groupInstanceId = Objects.requireNonNull(groupInstanceId, "group.instance.id can't be null");
     }
 
+    /**
+     * @deprecated Since 4.2, please use {@link KafkaConsumer#groupMetadata()} instead. This class will be an interface in Kafka 5.0.
+     */
+    @Deprecated(since = "4.2", forRemoval = true)
     public ConsumerGroupMetadata(String groupId) {
         this(groupId,
             JoinGroupRequest.UNKNOWN_GENERATION_ID,

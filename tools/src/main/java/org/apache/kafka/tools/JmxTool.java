@@ -16,23 +16,11 @@
  */
 package org.apache.kafka.tools;
 
-import joptsimple.OptionSpec;
 import org.apache.kafka.common.utils.Exit;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.server.util.CommandDefaultOptions;
 import org.apache.kafka.server.util.CommandLineUtils;
 
-import javax.management.Attribute;
-import javax.management.AttributeList;
-import javax.management.MBeanFeatureInfo;
-import javax.management.MBeanInfo;
-import javax.management.MBeanServerConnection;
-import javax.management.MalformedObjectNameException;
-import javax.management.ObjectName;
-import javax.management.remote.JMXConnector;
-import javax.management.remote.JMXConnectorFactory;
-import javax.management.remote.JMXServiceURL;
-import javax.rmi.ssl.SslRMIClientSocketFactory;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.text.DateFormat;
@@ -54,6 +42,20 @@ import java.util.function.BiPredicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import javax.management.Attribute;
+import javax.management.AttributeList;
+import javax.management.MBeanFeatureInfo;
+import javax.management.MBeanInfo;
+import javax.management.MBeanServerConnection;
+import javax.management.MalformedObjectNameException;
+import javax.management.ObjectName;
+import javax.management.remote.JMXConnector;
+import javax.management.remote.JMXConnectorFactory;
+import javax.management.remote.JMXServiceURL;
+import javax.rmi.ssl.SslRMIClientSocketFactory;
+
+import joptsimple.OptionSpec;
+
 /**
  * A program for reading JMX metrics from a given endpoint.
  * <p>
@@ -64,14 +66,7 @@ public class JmxTool {
     public static void main(String[] args) {
         try {
             JmxToolOptions options = new JmxToolOptions(args);
-            if (CommandLineUtils.isPrintHelpNeeded(options)) {
-                CommandLineUtils.printUsageAndExit(options.parser, "Dump JMX values to standard output.");
-                return;
-            }
-            if (CommandLineUtils.isPrintVersionNeeded(options)) {
-                CommandLineUtils.printVersionAndExit();
-                return;
-            }
+            CommandLineUtils.maybePrintHelpOrVersion(options, "Dump JMX values to standard output.");
 
             Optional<String[]> attributesInclude = options.attributesInclude();
             Optional<DateFormat> dateFormat = options.dateFormat();
@@ -82,7 +77,7 @@ public class JmxTool {
             List<ObjectName> queries = options.queries();
             boolean hasPatternQueries = queries.stream().filter(Objects::nonNull).anyMatch(ObjectName::isPattern);
 
-            Set<ObjectName> found = findObjectsIfNoPattern(options, conn, queries, hasPatternQueries);
+            Set<ObjectName> found = findObjects(options, conn, queries, hasPatternQueries);
             Map<ObjectName, Integer> numExpectedAttributes =
                     findNumExpectedAttributes(conn, attributesInclude, hasPatternQueries, queries, found);
 
@@ -94,7 +89,7 @@ public class JmxTool {
             while (keepGoing) {
                 long start = System.currentTimeMillis();
                 Map<String, Object> attributes = queryAttributes(conn, found, attributesInclude);
-                attributes.put("time", dateFormat.isPresent() ? dateFormat.get().format(new Date()) : String.valueOf(System.currentTimeMillis()));
+                attributes.put("time", dateFormat.map(format -> format.format(new Date())).orElseGet(() -> String.valueOf(System.currentTimeMillis())));
                 maybePrintDataRows(reportFormat, numExpectedAttributes, keys, attributes);
                 if (options.isOneTime()) {
                     keepGoing = false;
@@ -113,8 +108,8 @@ public class JmxTool {
         }
     }
 
-    private static String mkString(Stream<Object> stream, String delimeter) {
-        return stream.filter(Objects::nonNull).map(Object::toString).collect(Collectors.joining(delimeter));
+    private static String mkString(Stream<Object> stream, String delimiter) {
+        return stream.filter(Objects::nonNull).map(Object::toString).collect(Collectors.joining(delimiter));
     }
 
     private static int sumValues(Map<ObjectName, Integer> numExpectedAttributes) {
@@ -162,26 +157,24 @@ public class JmxTool {
         return serverConn;
     }
 
-    private static Set<ObjectName> findObjectsIfNoPattern(JmxToolOptions options,
-                                                          MBeanServerConnection conn,
-                                                          List<ObjectName> queries,
-                                                          boolean hasPatternQueries) throws Exception {
+    private static Set<ObjectName> findObjects(JmxToolOptions options,
+                                               MBeanServerConnection conn,
+                                               List<ObjectName> queries,
+                                               boolean hasPatternQueries) throws Exception {
         long waitTimeoutMs = 10_000;
         Set<ObjectName> result = new HashSet<>();
         Set<ObjectName> querySet = new HashSet<>(queries);
-        BiPredicate<Set<ObjectName>, Set<ObjectName>> foundAllObjects = (s1, s2) -> s1.containsAll(s2);
-        if (!hasPatternQueries) {
-            long start = System.currentTimeMillis();
-            do {
-                if (!result.isEmpty()) {
-                    System.err.println("Could not find all object names, retrying");
-                    TimeUnit.MILLISECONDS.sleep(100);
-                }
-                result.addAll(queryObjects(conn, queries));
-            } while (options.hasWait() && System.currentTimeMillis() - start < waitTimeoutMs && !foundAllObjects.test(querySet, result));
-        }
+        BiPredicate<Set<ObjectName>, Set<ObjectName>> foundAllObjects = Set::equals;
+        long start = System.currentTimeMillis();
+        do {
+            if (!result.isEmpty()) {
+                System.err.println("Could not find all object names, retrying");
+                TimeUnit.MILLISECONDS.sleep(100);
+            }
+            result.addAll(queryObjects(conn, queries));
+        } while (!hasPatternQueries && options.hasWait() && System.currentTimeMillis() - start < waitTimeoutMs && !foundAllObjects.test(querySet, result));
 
-        if (options.hasWait() && !foundAllObjects.test(querySet, result)) {
+        if (!hasPatternQueries && options.hasWait() && !foundAllObjects.test(querySet, result)) {
             querySet.removeAll(result);
             String missing = mkString(querySet.stream().map(Object::toString), ",");
             throw new TerseException(String.format("Could not find all requested object names after %d ms. Missing %s", waitTimeoutMs, missing));
@@ -208,7 +201,7 @@ public class JmxTool {
                                                                       List<ObjectName> queries,
                                                                       Set<ObjectName> found) throws Exception {
         Map<ObjectName, Integer> result = new HashMap<>();
-        if (!attributesInclude.isPresent()) {
+        if (attributesInclude.isEmpty()) {
             found.forEach(objectName -> {
                 try {
                     MBeanInfo mBeanInfo = conn.getMBeanInfo(objectName);
@@ -218,14 +211,14 @@ public class JmxTool {
                 }
             });
         } else {
-            if (!hasPatternQueries) {
+            if (hasPatternQueries) {
                 found.forEach(objectName -> {
                     try {
                         MBeanInfo mBeanInfo = conn.getMBeanInfo(objectName);
                         AttributeList attributes = conn.getAttributes(objectName, attributesNames(mBeanInfo));
                         List<ObjectName> expectedAttributes = new ArrayList<>();
                         attributes.asList().forEach(attribute -> {
-                            if (Arrays.asList(attributesInclude.get()).contains(attribute.getName())) {
+                            if (List.of(attributesInclude.get()).contains(attribute.getName())) {
                                 expectedAttributes.add(objectName);
                             }
                         });
@@ -237,7 +230,7 @@ public class JmxTool {
                     }
                 });
             } else {
-                queries.forEach(objectName -> result.put(objectName, attributesInclude.get().length));
+                found.forEach(objectName -> result.put(objectName, attributesInclude.get().length));
             }
         }
 
@@ -254,10 +247,10 @@ public class JmxTool {
         for (ObjectName objectName : objectNames) {
             MBeanInfo beanInfo = conn.getMBeanInfo(objectName);
             AttributeList attributes = conn.getAttributes(objectName,
-                    Arrays.stream(beanInfo.getAttributes()).map(a -> a.getName()).toArray(String[]::new));
+                    Arrays.stream(beanInfo.getAttributes()).map(MBeanFeatureInfo::getName).toArray(String[]::new));
             for (Attribute attribute : attributes.asList()) {
                 if (attributesInclude.isPresent()) {
-                    if (Arrays.asList(attributesInclude.get()).contains(attribute.getName())) {
+                    if (List.of(attributesInclude.get()).contains(attribute.getName())) {
                         result.put(String.format("%s:%s", objectName.toString(), attribute.getName()),
                                 attribute.getValue());
                     }
@@ -395,7 +388,7 @@ public class JmxTool {
 
         private String parseFormat() {
             String reportFormat = options.valueOf(reportFormatOpt).toLowerCase(Locale.ROOT);
-            return Arrays.asList("properties", "csv", "tsv").contains(reportFormat) ? reportFormat : "original";
+            return List.of("properties", "csv", "tsv").contains(reportFormat) ? reportFormat : "original";
         }
 
         public boolean hasJmxAuthPropOpt() {

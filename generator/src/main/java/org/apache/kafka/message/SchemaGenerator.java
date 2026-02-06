@@ -79,7 +79,7 @@ final class SchemaGenerator {
         this.messages = new HashMap<>();
     }
 
-    void generateSchemas(MessageSpec message) throws Exception {
+    void generateSchemas(MessageSpec message) {
         this.messageFlexibleVersions = message.flexibleVersions();
 
         // First generate schemas for common structures so that they are
@@ -90,12 +90,10 @@ final class SchemaGenerator {
         }
 
         // Generate schemas for inline structures
-        generateSchemas(message.dataClassName(), message.struct(),
-            message.struct().versions());
+        generateSchemas(message.dataClassName(), message.struct(), message.struct().versions());
     }
 
-    void generateSchemas(String className, StructSpec struct,
-                         Versions parentVersions) throws Exception {
+    void generateSchemas(String className, StructSpec struct, Versions parentVersions) {
         Versions versions = parentVersions.intersect(struct.versions());
         MessageInfo messageInfo = messages.get(className);
         if (messageInfo != null) {
@@ -127,7 +125,7 @@ final class SchemaGenerator {
 
     private void generateSchemaForVersion(StructSpec struct,
                                           short version,
-                                          CodeBuffer buffer) throws Exception {
+                                          CodeBuffer buffer) {
         // Find the last valid field index.
         int lastValidIndex = struct.fields().size() - 1;
         while (true) {
@@ -172,7 +170,7 @@ final class SchemaGenerator {
     }
 
     private void generateTaggedFieldsSchemaForVersion(StructSpec struct,
-            short version, CodeBuffer buffer) throws Exception {
+            short version, CodeBuffer buffer) {
         headerGenerator.addStaticImport(MessageGenerator.TAGGED_FIELDS_SECTION_CLASS);
 
         // Find the last valid tagged field index.
@@ -297,9 +295,9 @@ final class SchemaGenerator {
         } else if (type.isRecords()) {
             headerGenerator.addImport(MessageGenerator.TYPE_CLASS);
             if (fieldFlexibleVersions.contains(version)) {
-                return "Type.COMPACT_RECORDS";
+                return nullable ? "Type.COMPACT_NULLABLE_RECORDS" : "Type.COMPACT_RECORDS";
             } else {
-                return "Type.RECORDS";
+                return nullable ? "Type.NULLABLE_RECORDS" : "Type.RECORDS";
             }
         } else if (type.isArray()) {
             if (fieldFlexibleVersions.contains(version)) {
@@ -317,8 +315,12 @@ final class SchemaGenerator {
                         fieldTypeToSchemaType(arrayType.elementType(), false, version, fieldFlexibleVersions, false));
             }
         } else if (type.isStruct()) {
-            return String.format("%s.SCHEMA_%d", type,
+            if (nullable) {
+                headerGenerator.addImport(MessageGenerator.NULLABLE_SCHEMA_CLASS);
+            }
+            String schemaType = String.format("%s.SCHEMA_%d", type,
                 floorVersion(type.toString(), version));
+            return nullable ? String.format("new NullableSchema(%s)", schemaType) : schemaType;
         } else {
             throw new RuntimeException("Unsupported type " + type);
         }
@@ -339,7 +341,7 @@ final class SchemaGenerator {
      * @param className     The class name.
      * @param buffer        The destination buffer.
      */
-    void writeSchema(String className, CodeBuffer buffer) throws Exception {
+    void writeSchema(String className, CodeBuffer buffer) {
         MessageInfo messageInfo = messages.get(className);
         Versions versions = messageInfo.versions;
 

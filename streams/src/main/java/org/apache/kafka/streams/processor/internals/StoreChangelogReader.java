@@ -33,13 +33,15 @@ import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.streams.StreamsConfig;
-import org.apache.kafka.streams.StreamsConfig.InternalConfig;
 import org.apache.kafka.streams.errors.StreamsException;
 import org.apache.kafka.streams.errors.TaskCorruptedException;
+import org.apache.kafka.streams.processor.StandbyUpdateListener;
 import org.apache.kafka.streams.processor.StateRestoreListener;
 import org.apache.kafka.streams.processor.TaskId;
 import org.apache.kafka.streams.processor.internals.ProcessorStateManager.StateStoreMetadata;
 import org.apache.kafka.streams.processor.internals.Task.TaskType;
+import org.apache.kafka.streams.state.internals.MeteredStateStore;
+
 import org.slf4j.Logger;
 
 import java.time.Duration;
@@ -51,6 +53,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Function;
@@ -135,6 +138,8 @@ public class StoreChangelogReader implements ChangelogReader {
         // either due to limit offset (standby) or committed end offset (active)
         private int bufferedLimitIndex;
 
+        private long restoreStartTimeNs;
+
         private ChangelogMetadata(final StateStoreMetadata storeMetadata, final ProcessorStateManager stateManager) {
             this.changelogState = ChangelogState.REGISTERED;
             this.storeMetadata = storeMetadata;
@@ -185,9 +190,13 @@ public class StoreChangelogReader implements ChangelogReader {
         int bufferedLimitIndex() {
             return bufferedLimitIndex;
         }
+
+        long calculateRestoreTime(final long restoreEndTimeNs) {
+            return restoreEndTimeNs - restoreStartTimeNs;
+        }
     }
 
-    private final static long DEFAULT_OFFSET_UPDATE_MS = Duration.ofMinutes(5L).toMillis();
+    private static final long DEFAULT_OFFSET_UPDATE_MS = Duration.ofMinutes(5L).toMillis();
 
     private ChangelogReaderState state;
 
@@ -202,8 +211,6 @@ public class StoreChangelogReader implements ChangelogReader {
     private final Consumer<byte[], byte[]> restoreConsumer;
     private final StateRestoreListener stateRestoreListener;
 
-    private final boolean stateUpdaterEnabled;
-
     // source of the truth of the current registered changelogs;
     // NOTE a changelog would only be removed when its corresponding task
     // is being removed from the thread; otherwise it would stay in this map even after completed
@@ -216,22 +223,22 @@ public class StoreChangelogReader implements ChangelogReader {
     private final Admin adminClient;
 
     private long lastUpdateOffsetTime;
+    private final StandbyUpdateListener standbyUpdateListener;
 
     public StoreChangelogReader(final Time time,
                                 final StreamsConfig config,
                                 final LogContext logContext,
                                 final Admin adminClient,
                                 final Consumer<byte[], byte[]> restoreConsumer,
-                                final StateRestoreListener stateRestoreListener) {
+                                final StateRestoreListener stateRestoreListener,
+                                final StandbyUpdateListener standbyUpdateListener) {
         this.time = time;
         this.log = logContext.logger(StoreChangelogReader.class);
         this.state = ChangelogReaderState.ACTIVE_RESTORING;
         this.adminClient = adminClient;
         this.restoreConsumer = restoreConsumer;
         this.stateRestoreListener = stateRestoreListener;
-
-        this.stateUpdaterEnabled =
-            InternalConfig.getBoolean(config.originals(), InternalConfig.STATE_UPDATER_ENABLED, false);
+        this.standbyUpdateListener = standbyUpdateListener;
 
         this.groupId = config.getString(StreamsConfig.APPLICATION_ID_CONFIG);
         this.pollTime = Duration.ofMillis(config.getLong(StreamsConfig.POLL_MS_CONFIG));
@@ -456,16 +463,11 @@ public class StoreChangelogReader implements ChangelogReader {
                 // TODO: we always try to restore as a batch when some records are accumulated, which may result in
                 //       small batches; this can be optimized in the future, e.g. wait longer for larger batches.
                 final TaskId taskId = changelogs.get(partition).stateManager.taskId();
+                final Task task = tasks.get(taskId);
+
                 try {
                     final ChangelogMetadata changelogMetadata = changelogs.get(partition);
-                    final int restored = restoreChangelog(changelogMetadata);
-                    if (restored > 0 || changelogMetadata.state().equals(ChangelogState.COMPLETED)) {
-                        final Task task = tasks.get(taskId);
-                        if (task != null) {
-                            task.clearTaskTimeout();
-                        }
-                    }
-                    totalRestored += restored;
+                    totalRestored += restoreChangelog(task, changelogMetadata);
                 } catch (final TimeoutException timeoutException) {
                     tasks.get(taskId).maybeInitTaskTimeoutOrThrow(
                         time.milliseconds(),
@@ -484,15 +486,12 @@ public class StoreChangelogReader implements ChangelogReader {
 
     private ConsumerRecords<byte[], byte[]> pollRecordsFromRestoreConsumer(final Map<TaskId, Task> tasks,
                                                                            final Set<TopicPartition> restoringChangelogs) {
-        // If we are updating only standby tasks, and are not using a separate thread, we should
-        // use a non-blocking poll to unblock the processing as soon as possible.
-        final boolean useNonBlockingPoll = state == ChangelogReaderState.STANDBY_UPDATING && !stateUpdaterEnabled;
         final ConsumerRecords<byte[], byte[]> polledRecords;
 
         try {
             pauseResumePartitions(tasks, restoringChangelogs);
 
-            polledRecords = restoreConsumer.poll(useNonBlockingPoll ? Duration.ZERO : pollTime);
+            polledRecords = restoreConsumer.poll(pollTime);
 
             // TODO (?) If we cannot fetch records during restore, should we trigger `task.timeout.ms` ?
             // TODO (?) If we cannot fetch records for standby task, should we trigger `task.timeout.ms` ?
@@ -642,7 +641,7 @@ public class StoreChangelogReader implements ChangelogReader {
      *
      * @return number of records restored
      */
-    private int restoreChangelog(final ChangelogMetadata changelogMetadata) {
+    private int restoreChangelog(final Task task, final ChangelogMetadata changelogMetadata) {
         final ProcessorStateManager stateManager = changelogMetadata.stateManager;
         final StateStoreMetadata storeMetadata = changelogMetadata.storeMetadata;
         final TopicPartition partition = storeMetadata.changelogPartition();
@@ -651,7 +650,8 @@ public class StoreChangelogReader implements ChangelogReader {
 
         if (numRecords != 0) {
             final List<ConsumerRecord<byte[], byte[]>> records = changelogMetadata.bufferedRecords.subList(0, numRecords);
-            stateManager.restore(storeMetadata, records);
+            final OptionalLong optionalLag = restoreConsumer.currentLag(partition);
+            stateManager.restore(storeMetadata, records, optionalLag);
 
             // NOTE here we use removeRange of ArrayList in order to achieve efficiency with range shifting,
             // otherwise one-at-a-time removal or addition would be very costly; if all records are restored
@@ -661,6 +661,8 @@ public class StoreChangelogReader implements ChangelogReader {
             } else {
                 changelogMetadata.bufferedRecords.clear();
             }
+
+            task.recordRestoration(time, numRecords, false);
 
             final Long currentOffset = storeMetadata.offset();
             log.trace("Restored {} records from changelog {} to store {}, end offset is {}, current offset is {}",
@@ -676,6 +678,12 @@ public class StoreChangelogReader implements ChangelogReader {
                 } catch (final Exception e) {
                     throw new StreamsException("State restore listener failed on batch restored", e);
                 }
+            } else if (changelogMetadata.stateManager.taskType() == TaskType.STANDBY) {
+                try {
+                    standbyUpdateListener.onBatchLoaded(partition, storeName, stateManager.taskId(), currentOffset, numRecords, storeMetadata.endOffset());
+                } catch (final Exception e) {
+                    throw new StreamsException("Standby updater listener failed on batch loaded", e);
+                }
             }
         }
 
@@ -686,12 +694,19 @@ public class StoreChangelogReader implements ChangelogReader {
 
             changelogMetadata.transitTo(ChangelogState.COMPLETED);
             pauseChangelogsFromRestoreConsumer(Collections.singleton(partition));
+            if (storeMetadata.store() instanceof MeteredStateStore) {
+                ((MeteredStateStore) storeMetadata.store()).recordRestoreTime(changelogMetadata.calculateRestoreTime(time.nanoseconds()));
+            }
 
             try {
                 stateRestoreListener.onRestoreEnd(partition, storeName, changelogMetadata.totalRestored);
             } catch (final Exception e) {
                 throw new StreamsException("State restore listener failed on restore completed", e);
             }
+        }
+
+        if (numRecords > 0 || changelogMetadata.state().equals(ChangelogState.COMPLETED)) {
+            task.clearTaskTimeout();
         }
 
         return numRecords;
@@ -728,10 +743,14 @@ public class StoreChangelogReader implements ChangelogReader {
         try {
             // those which do not have a committed offset would default to 0
             final ListConsumerGroupOffsetsOptions options = new ListConsumerGroupOffsetsOptions()
-                    .requireStable(true);
+                .requireStable(true);
             final ListConsumerGroupOffsetsSpec spec = new ListConsumerGroupOffsetsSpec()
-                    .topicPartitions(new ArrayList<>(partitions));
-            final Map<TopicPartition, Long> committedOffsets = adminClient.listConsumerGroupOffsets(Collections.singletonMap(groupId, spec))
+                .topicPartitions(new ArrayList<>(partitions));
+            final Map<TopicPartition, Long> committedOffsets =
+                adminClient.listConsumerGroupOffsets(
+                        Collections.singletonMap(groupId, spec),
+                        options
+                    )
                     .partitionsToOffsetAndMetadata(groupId).get().entrySet()
                     .stream()
                     .collect(Collectors.toMap(Map.Entry::getKey, e -> e.getValue() == null ? 0L : e.getValue().offset()));
@@ -746,6 +765,11 @@ public class StoreChangelogReader implements ChangelogReader {
         } catch (final KafkaException e) {
             throw new StreamsException(String.format("Failed to retrieve committed offsets for %s", partitions), e);
         }
+    }
+
+    private void filterNewPartitionsToRestore(final Map<TaskId, Task> tasks, final Set<ChangelogMetadata> newPartitionsToRestore) {
+        newPartitionsToRestore.removeIf(changelogMetadata ->
+            !tasks.containsKey(changelogs.get(changelogMetadata.storeMetadata.changelogPartition()).stateManager.taskId()));
     }
 
     private Map<TopicPartition, Long> endOffsetForChangelogs(final Map<TaskId, Task> tasks, final Set<TopicPartition> partitions) {
@@ -802,6 +826,11 @@ public class StoreChangelogReader implements ChangelogReader {
 
     private void initializeChangelogs(final Map<TaskId, Task> tasks,
                                       final Set<ChangelogMetadata> newPartitionsToRestore) {
+        // for those changelog partitions whose tasks are not included, in means those tasks
+        // are paused at the moment, and hence we should not try to initialize those
+        // changelogs yet
+        filterNewPartitionsToRestore(tasks, newPartitionsToRestore);
+
         if (newPartitionsToRestore.isEmpty()) {
             return;
         }
@@ -846,7 +875,7 @@ public class StoreChangelogReader implements ChangelogReader {
 
                 changelogMetadata.restoreEndOffset = Math.min(endOffset, committedOffset);
 
-                log.debug("End offset for changelog {} initialized as {}.", partition, changelogMetadata.restoreEndOffset);
+                log.info("End offset for changelog {} initialized as {}.", partition, changelogMetadata.restoreEndOffset);
             } else {
                 if (!newPartitionsToRestore.remove(changelogMetadata)) {
                     throw new IllegalStateException("New changelogs to restore " + newPartitionsToRestore +
@@ -857,7 +886,7 @@ public class StoreChangelogReader implements ChangelogReader {
             }
         }
 
-        // try initialize limit offsets for standby tasks for the first time
+        // try initializing limit offsets for standby tasks for the first time
         if (!committedOffsets.isEmpty()) {
             updateLimitOffsetsForStandbyChangelogs(committedOffsets);
         }
@@ -875,10 +904,13 @@ public class StoreChangelogReader implements ChangelogReader {
         }
 
         // prepare newly added partitions of the restore consumer by setting their starting position
-        prepareChangelogs(newPartitionsToRestore);
+        prepareChangelogs(tasks, newPartitionsToRestore);
     }
 
     private void addChangelogsToRestoreConsumer(final Set<TopicPartition> partitions) {
+        if (partitions.isEmpty())
+            return;
+
         final Set<TopicPartition> assignment = new HashSet<>(restoreConsumer.assignment());
 
         // the current assignment should not contain any of the new partitions
@@ -906,6 +938,10 @@ public class StoreChangelogReader implements ChangelogReader {
     }
 
     private void removeChangelogsFromRestoreConsumer(final Collection<TopicPartition> partitions) {
+        if (partitions.isEmpty()) {
+            return;
+        }
+
         final Set<TopicPartition> assignment = new HashSet<>(restoreConsumer.assignment());
 
         // the current assignment should contain all the partitions to remove
@@ -930,7 +966,8 @@ public class StoreChangelogReader implements ChangelogReader {
         log.debug("Resumed partitions {} from the restore consumer", partitions);
     }
 
-    private void prepareChangelogs(final Set<ChangelogMetadata> newPartitionsToRestore) {
+    private void prepareChangelogs(final Map<TaskId, Task> tasks,
+                                   final Set<ChangelogMetadata> newPartitionsToRestore) {
         // separate those who do not have the current offset loaded from checkpoint
         final Set<TopicPartition> newPartitionsWithoutStartOffset = new HashSet<>();
 
@@ -962,29 +999,41 @@ public class StoreChangelogReader implements ChangelogReader {
             restoreConsumer.seekToBeginning(newPartitionsWithoutStartOffset);
         }
 
-        // do not trigger restore listener if we are processing standby tasks
         for (final ChangelogMetadata changelogMetadata : newPartitionsToRestore) {
-            if (changelogMetadata.stateManager.taskType() == Task.TaskType.ACTIVE) {
-                final StateStoreMetadata storeMetadata = changelogMetadata.storeMetadata;
-                final TopicPartition partition = storeMetadata.changelogPartition();
-                final String storeName = storeMetadata.store().name();
-
-                long startOffset = 0L;
-                try {
-                    startOffset = restoreConsumer.position(partition);
-                } catch (final TimeoutException swallow) {
-                    // if we cannot find the starting position at the beginning, just use the default 0L
-                } catch (final KafkaException e) {
-                    // this also includes InvalidOffsetException, which should not happen under normal
-                    // execution, hence it is also okay to wrap it as fatal StreamsException
-                    throw new StreamsException("Restore consumer get unexpected error trying to get the position " +
+            final StateStoreMetadata storeMetadata = changelogMetadata.storeMetadata;
+            final TopicPartition partition = storeMetadata.changelogPartition();
+            final String storeName = storeMetadata.store().name();
+            long startOffset = 0L;
+            try {
+                startOffset = restoreConsumer.position(partition);
+            } catch (final TimeoutException swallow) {
+                // if we cannot find the starting position at the beginning, just use the default 0L
+            } catch (final KafkaException e) {
+                // this also includes InvalidOffsetException, which should not happen under normal
+                // execution, hence it is also okay to wrap it as fatal StreamsException
+                throw new StreamsException("Restore consumer get unexpected error trying to get the position " +
                         " of " + partition, e);
-                }
-
+            }
+            if (changelogMetadata.stateManager.taskType() == Task.TaskType.ACTIVE) {
                 try {
                     stateRestoreListener.onRestoreStart(partition, storeName, startOffset, changelogMetadata.restoreEndOffset);
                 } catch (final Exception e) {
-                    throw new StreamsException("State restore listener failed on batch restored", e);
+                    throw new StreamsException("State restore listener failed on restore start", e);
+                }
+
+                final TaskId taskId = changelogMetadata.stateManager.taskId();
+                final Task task = tasks.get(taskId);
+                // if the log is truncated between when we get the log end offset and when we get the
+                // consumer position, then it's possible that the difference become negative and there's actually
+                // no records to restore; in this case we just initialize the sensor to zero
+                final long recordsToRestore = Math.max(changelogMetadata.restoreEndOffset - startOffset, 0L);
+                task.recordRestoration(time, recordsToRestore, true);
+                changelogMetadata.restoreStartTimeNs = time.nanoseconds();
+            }  else if (changelogMetadata.stateManager.taskType() == TaskType.STANDBY) {
+                try {
+                    standbyUpdateListener.onUpdateStart(partition, storeName, startOffset);
+                } catch (final Exception e) {
+                    throw new StreamsException("Standby updater listener failed on update start");
                 }
             }
         }
@@ -1006,13 +1055,29 @@ public class StoreChangelogReader implements ChangelogReader {
                     // if the changelog is not in RESTORING, it means
                     // the corresponding onRestoreStart was not called; in this case
                     // we should not call onRestoreSuspended either
-                    if (changelogMetadata.stateManager.taskType() == Task.TaskType.ACTIVE &&
-                        changelogMetadata.state().equals(ChangelogState.RESTORING)) {
-                        try {
-                            final String storeName = changelogMetadata.storeMetadata.store().name();
-                            stateRestoreListener.onRestoreSuspended(partition, storeName, changelogMetadata.totalRestored);
-                        } catch (final Exception e) {
-                            throw new StreamsException("State restore listener failed on restore paused", e);
+                    if (changelogMetadata.state().equals(ChangelogState.RESTORING)) {
+                        final String storeName = changelogMetadata.storeMetadata.store().name();
+                        if (changelogMetadata.stateManager.taskType() == Task.TaskType.ACTIVE) {
+                            try {
+                                stateRestoreListener.onRestoreSuspended(partition, storeName, changelogMetadata.totalRestored);
+                            } catch (final Exception e) {
+                                throw new StreamsException("State restore listener failed on restore paused", e);
+                            }
+                        } else if (changelogMetadata.stateManager.taskType() == TaskType.STANDBY) {
+                            final StateStoreMetadata storeMetadata = changelogMetadata.stateManager.storeMetadata(partition);
+                            // endOffset and storeOffset may be unknown at this point
+                            final long storeOffset = storeMetadata.offset() != null ? storeMetadata.offset() : -1;
+                            final long endOffset = storeMetadata.endOffset() != null ? storeMetadata.endOffset() : -1;
+                            // Unregistering running standby tasks means the task has been promoted to active.
+                            final StandbyUpdateListener.SuspendReason suspendReason = 
+                                changelogMetadata.stateManager.taskState() == Task.State.RUNNING 
+                                    ? StandbyUpdateListener.SuspendReason.PROMOTED
+                                    : StandbyUpdateListener.SuspendReason.MIGRATED;
+                            try {
+                                standbyUpdateListener.onUpdateSuspended(partition, storeName, storeOffset, endOffset, suspendReason);
+                            } catch (final Exception e) {
+                                throw new StreamsException("Standby updater listener failed on update suspended", e);
+                            }
                         }
                     }
                 }

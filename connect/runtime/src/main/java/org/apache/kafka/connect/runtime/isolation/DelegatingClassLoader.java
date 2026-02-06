@@ -16,52 +16,19 @@
  */
 package org.apache.kafka.connect.runtime.isolation;
 
-import org.apache.kafka.common.config.provider.ConfigProvider;
-import org.apache.kafka.connect.components.Versioned;
-import org.apache.kafka.connect.connector.Connector;
-import org.apache.kafka.connect.connector.policy.ConnectorClientConfigOverridePolicy;
-import org.apache.kafka.connect.rest.ConnectRestExtension;
-import org.apache.kafka.connect.sink.SinkConnector;
-import org.apache.kafka.connect.source.SourceConnector;
-import org.apache.kafka.connect.storage.Converter;
-import org.apache.kafka.connect.storage.HeaderConverter;
-import org.apache.kafka.connect.transforms.Transformation;
-import org.apache.kafka.connect.transforms.predicates.Predicate;
-import org.reflections.Configuration;
-import org.reflections.Reflections;
-import org.reflections.ReflectionsException;
-import org.reflections.scanners.SubTypesScanner;
-import org.reflections.util.ClasspathHelper;
-import org.reflections.util.ConfigurationBuilder;
+import org.apache.maven.artifact.versioning.DefaultArtifactVersion;
+import org.apache.maven.artifact.versioning.VersionRange;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
-import java.lang.reflect.InvocationTargetException;
-import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLClassLoader;
-import java.nio.file.Files;
-import java.nio.file.InvalidPathException;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.security.AccessController;
-import java.security.PrivilegedAction;
-import java.sql.Driver;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Enumeration;
-import java.util.Iterator;
 import java.util.List;
-import java.util.ServiceConfigurationError;
-import java.util.ServiceLoader;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.SortedMap;
-import java.util.SortedSet;
 import java.util.TreeMap;
-import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
@@ -79,488 +46,229 @@ import java.util.stream.Collectors;
  */
 public class DelegatingClassLoader extends URLClassLoader {
     private static final Logger log = LoggerFactory.getLogger(DelegatingClassLoader.class);
-    private static final String CLASSPATH_NAME = "classpath";
-    public static final String UNDEFINED_VERSION = "undefined";
 
     private final ConcurrentMap<String, SortedMap<PluginDesc<?>, ClassLoader>> pluginLoaders;
     private final ConcurrentMap<String, String> aliases;
-    private final SortedSet<PluginDesc<SinkConnector>> sinkConnectors;
-    private final SortedSet<PluginDesc<SourceConnector>> sourceConnectors;
-    private final SortedSet<PluginDesc<Converter>> converters;
-    private final SortedSet<PluginDesc<HeaderConverter>> headerConverters;
-    private final SortedSet<PluginDesc<Transformation<?>>> transformations;
-    private final SortedSet<PluginDesc<Predicate<?>>> predicates;
-    private final SortedSet<PluginDesc<ConfigProvider>> configProviders;
-    private final SortedSet<PluginDesc<ConnectRestExtension>> restExtensions;
-    private final SortedSet<PluginDesc<ConnectorClientConfigOverridePolicy>> connectorClientConfigPolicies;
-    private final List<String> pluginPaths;
-
-    private static final String MANIFEST_PREFIX = "META-INF/services/";
-    private static final Class<?>[] SERVICE_LOADER_PLUGINS = new Class<?>[] {ConnectRestExtension.class, ConfigProvider.class};
-    private static final Set<String> PLUGIN_MANIFEST_FILES =
-        Arrays.stream(SERVICE_LOADER_PLUGINS).map(serviceLoaderPlugin -> MANIFEST_PREFIX + serviceLoaderPlugin.getName())
-            .collect(Collectors.toSet());
 
     // Although this classloader does not load classes directly but rather delegates loading to a
-    // PluginClassLoader or its parent through its base class, because of the use of inheritance in
+    // PluginClassLoader or its parent through its base class, because of the use of inheritance
     // in the latter case, this classloader needs to also be declared as parallel capable to use
     // fine-grain locking when loading classes.
     static {
         ClassLoader.registerAsParallelCapable();
     }
 
-    public DelegatingClassLoader(List<String> pluginPaths, ClassLoader parent) {
+    public DelegatingClassLoader(ClassLoader parent) {
         super(new URL[0], parent);
-        this.pluginPaths = pluginPaths;
         this.pluginLoaders = new ConcurrentHashMap<>();
         this.aliases = new ConcurrentHashMap<>();
-        this.sinkConnectors = new TreeSet<>();
-        this.sourceConnectors = new TreeSet<>();
-        this.converters = new TreeSet<>();
-        this.headerConverters = new TreeSet<>();
-        this.transformations = new TreeSet<>();
-        this.predicates = new TreeSet<>();
-        this.configProviders = new TreeSet<>();
-        this.restExtensions = new TreeSet<>();
-        this.connectorClientConfigPolicies = new TreeSet<>();
     }
 
-    public DelegatingClassLoader(List<String> pluginPaths) {
+    public DelegatingClassLoader() {
         // Use as parent the classloader that loaded this class. In most cases this will be the
         // System classloader. But this choice here provides additional flexibility in managed
         // environments that control classloading differently (OSGi, Spring and others) and don't
         // depend on the System classloader to load Connect's classes.
-        this(pluginPaths, DelegatingClassLoader.class.getClassLoader());
-    }
-
-    @SuppressWarnings({"unchecked", "rawtypes"})
-    public Set<PluginDesc<Connector>> connectors() {
-        Set<PluginDesc<Connector>> connectors = new TreeSet<>((Set) sinkConnectors);
-        connectors.addAll((Set) sourceConnectors);
-        return connectors;
-    }
-
-    public Set<PluginDesc<SinkConnector>> sinkConnectors() {
-        return sinkConnectors;
-    }
-
-    public Set<PluginDesc<SourceConnector>> sourceConnectors() {
-        return sourceConnectors;
-    }
-
-    public Set<PluginDesc<Converter>> converters() {
-        return converters;
-    }
-
-    public Set<PluginDesc<HeaderConverter>> headerConverters() {
-        return headerConverters;
-    }
-
-    public Set<PluginDesc<Transformation<?>>> transformations() {
-        return transformations;
-    }
-
-    public Set<PluginDesc<Predicate<?>>> predicates() {
-        return predicates;
-    }
-
-    public Set<PluginDesc<ConfigProvider>> configProviders() {
-        return configProviders;
-    }
-
-    public Set<PluginDesc<ConnectRestExtension>> restExtensions() {
-        return restExtensions;
-    }
-
-    public Set<PluginDesc<ConnectorClientConfigOverridePolicy>> connectorClientConfigPolicies() {
-        return connectorClientConfigPolicies;
+        this(DelegatingClassLoader.class.getClassLoader());
     }
 
     /**
      * Retrieve the PluginClassLoader associated with a plugin class
+     *
      * @param name The fully qualified class name of the plugin
+     * @param range The version range of the plugin
+     * @param connectorLoader The ClassLoader of the connector loading this plugin
      * @return the PluginClassLoader that should be used to load this, or null if the plugin is not isolated.
      */
-    // VisibleForTesting
-    PluginClassLoader pluginClassLoader(String name) {
+    PluginClassLoader pluginClassLoader(String name, VersionRange range, Optional<ClassLoader> connectorLoader) {
         if (!PluginUtils.shouldLoadInIsolation(name)) {
             return null;
         }
+
         SortedMap<PluginDesc<?>, ClassLoader> inner = pluginLoaders.get(name);
         if (inner == null) {
             return null;
         }
-        ClassLoader pluginLoader = inner.get(inner.lastKey());
+
+        ClassLoader pluginLoader = findPluginLoader(inner, name, range, connectorLoader);
         return pluginLoader instanceof PluginClassLoader
-               ? (PluginClassLoader) pluginLoader
-               : null;
+            ? (PluginClassLoader) pluginLoader
+            : null;
     }
 
-    ClassLoader connectorLoader(String connectorClassOrAlias) {
-        String fullName = aliases.getOrDefault(connectorClassOrAlias, connectorClassOrAlias);
-        ClassLoader classLoader = pluginClassLoader(fullName);
-        if (classLoader == null) classLoader = this;
+    ClassLoader connectorLoader(String classOrAlias, VersionRange range) {
+        String fullName = aliases.getOrDefault(classOrAlias, classOrAlias);
+        ClassLoader classLoader = pluginClassLoader(fullName, range, Optional.empty());
+        if (classLoader == null) {
+            classLoader = this;
+        }
         log.debug(
-            "Getting plugin class loader: '{}' for connector: {}",
-            classLoader,
-            connectorClassOrAlias
+                "Got plugin class loader: '{}' for connector: {}",
+                classLoader,
+                classOrAlias
         );
         return classLoader;
     }
 
-    // VisibleForTesting
-    PluginClassLoader newPluginClassLoader(
-            final URL pluginLocation,
-            final URL[] urls,
-            final ClassLoader parent
-    ) {
-        return AccessController.doPrivileged(
-                (PrivilegedAction<PluginClassLoader>) () -> new PluginClassLoader(pluginLocation, urls, parent)
+    ClassLoader pluginLoader(String classOrAlias, VersionRange range, ClassLoader connectorLoader) {
+        String fullName = aliases.getOrDefault(classOrAlias, classOrAlias);
+        ClassLoader classLoader = pluginClassLoader(fullName, range, Optional.ofNullable(connectorLoader));
+        if (classLoader == null) {
+            classLoader = this;
+        }
+        log.debug(
+                "Got plugin class loader: '{}' for plugin: {}",
+                classLoader,
+                classOrAlias
         );
+        return classLoader;
     }
 
-    private <T> void addPlugins(Collection<PluginDesc<T>> plugins, ClassLoader loader) {
-        for (PluginDesc<T> plugin : plugins) {
-            String pluginClassName = plugin.className();
-            SortedMap<PluginDesc<?>, ClassLoader> inner = pluginLoaders.get(pluginClassName);
-            if (inner == null) {
-                inner = new TreeMap<>();
-                pluginLoaders.put(pluginClassName, inner);
-                // TODO: once versioning is enabled this line should be moved outside this if branch
-                log.info("Added plugin '{}'", pluginClassName);
+    ClassLoader connectorLoader(String connectorClassOrAlias) {
+        return connectorLoader(connectorClassOrAlias, null);
+    }
+
+    String resolveFullClassName(String classOrAlias) {
+        return aliases.getOrDefault(classOrAlias, classOrAlias);
+    }
+
+    PluginDesc<?> pluginDesc(String classOrAlias, String preferredLocation, Set<PluginType> allowedTypes) {
+        if (classOrAlias == null) {
+            return null;
+        }
+        String fullName = aliases.getOrDefault(classOrAlias, classOrAlias);
+        SortedMap<PluginDesc<?>, ClassLoader> inner = pluginLoaders.get(fullName);
+        if (inner == null) {
+            return null;
+        }
+        PluginDesc<?> result = null;
+        for (Map.Entry<PluginDesc<?>, ClassLoader> entry : inner.entrySet()) {
+            if (!allowedTypes.contains(entry.getKey().type())) {
+                continue;
             }
-            inner.put(plugin, loader);
-        }
-    }
-
-    protected void initLoaders() {
-        for (String configPath : pluginPaths) {
-            initPluginLoader(configPath);
-        }
-        // Finally add parent/system loader.
-        initPluginLoader(CLASSPATH_NAME);
-        addAllAliases();
-    }
-
-    private void initPluginLoader(String path) {
-        try {
-            if (CLASSPATH_NAME.equals(path)) {
-                scanUrlsAndAddPlugins(
-                        getParent(),
-                        ClasspathHelper.forJavaClassPath().toArray(new URL[0])
-                );
-            } else {
-                Path pluginPath = Paths.get(path).toAbsolutePath();
-                // Update for exception handling
-                path = pluginPath.toString();
-                // Currently 'plugin.paths' property is a list of top-level directories
-                // containing plugins
-                if (Files.isDirectory(pluginPath)) {
-                    for (Path pluginLocation : PluginUtils.pluginLocations(pluginPath)) {
-                        registerPlugin(pluginLocation);
-                    }
-                } else if (PluginUtils.isArchive(pluginPath)) {
-                    registerPlugin(pluginPath);
-                }
-            }
-        } catch (InvalidPathException | MalformedURLException e) {
-            log.error("Invalid path in plugin path: {}. Ignoring.", path, e);
-        } catch (IOException e) {
-            log.error("Could not get listing for plugin path: {}. Ignoring.", path, e);
-        }
-    }
-
-    private void registerPlugin(Path pluginLocation)
-        throws IOException {
-        log.info("Loading plugin from: {}", pluginLocation);
-        List<URL> pluginUrls = new ArrayList<>();
-        for (Path path : PluginUtils.pluginUrls(pluginLocation)) {
-            pluginUrls.add(path.toUri().toURL());
-        }
-        URL[] urls = pluginUrls.toArray(new URL[0]);
-        if (log.isDebugEnabled()) {
-            log.debug("Loading plugin urls: {}", Arrays.toString(urls));
-        }
-        PluginClassLoader loader = newPluginClassLoader(
-                pluginLocation.toUri().toURL(),
-                urls,
-                this
-        );
-        scanUrlsAndAddPlugins(loader, urls);
-    }
-
-    private void scanUrlsAndAddPlugins(
-            ClassLoader loader,
-            URL[] urls
-    ) {
-        PluginScanResult plugins = scanPluginPath(loader, urls);
-        log.info("Registered loader: {}", loader);
-        if (!plugins.isEmpty()) {
-            addPlugins(plugins.sinkConnectors(), loader);
-            sinkConnectors.addAll(plugins.sinkConnectors());
-            addPlugins(plugins.sourceConnectors(), loader);
-            sourceConnectors.addAll(plugins.sourceConnectors());
-            addPlugins(plugins.converters(), loader);
-            converters.addAll(plugins.converters());
-            addPlugins(plugins.headerConverters(), loader);
-            headerConverters.addAll(plugins.headerConverters());
-            addPlugins(plugins.transformations(), loader);
-            transformations.addAll(plugins.transformations());
-            addPlugins(plugins.predicates(), loader);
-            predicates.addAll(plugins.predicates());
-            addPlugins(plugins.configProviders(), loader);
-            configProviders.addAll(plugins.configProviders());
-            addPlugins(plugins.restExtensions(), loader);
-            restExtensions.addAll(plugins.restExtensions());
-            addPlugins(plugins.connectorClientConfigPolicies(), loader);
-            connectorClientConfigPolicies.addAll(plugins.connectorClientConfigPolicies());
-        }
-
-        loadJdbcDrivers(loader);
-    }
-
-    private void loadJdbcDrivers(final ClassLoader loader) {
-        // Apply here what java.sql.DriverManager does to discover and register classes
-        // implementing the java.sql.Driver interface.
-        AccessController.doPrivileged(
-            (PrivilegedAction<Void>) () -> {
-                ServiceLoader<Driver> loadedDrivers = ServiceLoader.load(
-                        Driver.class,
-                        loader
-                );
-                Iterator<Driver> driversIterator = loadedDrivers.iterator();
-                try {
-                    while (driversIterator.hasNext()) {
-                        Driver driver = driversIterator.next();
-                        log.debug(
-                                "Registered java.sql.Driver: {} to java.sql.DriverManager",
-                                driver
-                        );
-                    }
-                } catch (Throwable t) {
-                    log.debug(
-                            "Ignoring java.sql.Driver classes listed in resources but not"
-                                    + " present in class loader's classpath: ",
-                            t
-                    );
-                }
-                return null;
-            }
-        );
-    }
-
-    private PluginScanResult scanPluginPath(
-            ClassLoader loader,
-            URL[] urls
-    ) {
-        ConfigurationBuilder builder = new ConfigurationBuilder();
-        builder.setClassLoaders(new ClassLoader[]{loader});
-        builder.addUrls(urls);
-        builder.setScanners(new SubTypesScanner());
-        builder.useParallelExecutor();
-        Reflections reflections = new InternalReflections(builder);
-
-        return new PluginScanResult(
-                getPluginDesc(reflections, SinkConnector.class, loader),
-                getPluginDesc(reflections, SourceConnector.class, loader),
-                getPluginDesc(reflections, Converter.class, loader),
-                getPluginDesc(reflections, HeaderConverter.class, loader),
-                getTransformationPluginDesc(loader, reflections),
-                getPredicatePluginDesc(loader, reflections),
-                getServiceLoaderPluginDesc(ConfigProvider.class, loader),
-                getServiceLoaderPluginDesc(ConnectRestExtension.class, loader),
-                getServiceLoaderPluginDesc(ConnectorClientConfigOverridePolicy.class, loader)
-        );
-    }
-
-    @SuppressWarnings({"unchecked"})
-    private Collection<PluginDesc<Predicate<?>>> getPredicatePluginDesc(ClassLoader loader, Reflections reflections) {
-        return (Collection<PluginDesc<Predicate<?>>>) (Collection<?>) getPluginDesc(reflections, Predicate.class, loader);
-    }
-
-    @SuppressWarnings({"unchecked"})
-    private Collection<PluginDesc<Transformation<?>>> getTransformationPluginDesc(ClassLoader loader, Reflections reflections) {
-        return (Collection<PluginDesc<Transformation<?>>>) (Collection<?>) getPluginDesc(reflections, Transformation.class, loader);
-    }
-
-    private <T> Collection<PluginDesc<T>> getPluginDesc(
-            Reflections reflections,
-            Class<T> klass,
-            ClassLoader loader
-    ) {
-        Set<Class<? extends T>> plugins;
-        try {
-            plugins = reflections.getSubTypesOf(klass);
-        } catch (ReflectionsException e) {
-            log.debug("Reflections scanner could not find any classes for URLs: " +
-                    reflections.getConfiguration().getUrls(), e);
-            return Collections.emptyList();
-        }
-
-        Collection<PluginDesc<T>> result = new ArrayList<>();
-        for (Class<? extends T> plugin : plugins) {
-            if (PluginUtils.isConcrete(plugin)) {
-                try {
-                    result.add(pluginDesc(plugin, versionFor(plugin), loader));
-                } catch (ReflectiveOperationException | LinkageError e) {
-                    log.error("Failed to discover {}: Unable to instantiate {}{}", klass.getSimpleName(), plugin.getSimpleName(), reflectiveErrorDescription(e), e);
-                }
-            } else {
-                log.debug("Skipping {} as it is not concrete implementation", plugin);
+            result = entry.getKey();
+            if (result.location().equals(preferredLocation)) {
+                return result;
             }
         }
         return result;
     }
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
-    private <T> PluginDesc<T> pluginDesc(Class<? extends T> plugin, String version, ClassLoader loader) {
-        return new PluginDesc(plugin, version, loader);
-    }
+    private ClassLoader findPluginLoader(
+        SortedMap<PluginDesc<?>, ClassLoader> loaders,
+        String pluginName,
+        VersionRange range,
+        Optional<ClassLoader> connectorLoader
+    ) {
 
-    @SuppressWarnings("unchecked")
-    private <T> Collection<PluginDesc<T>> getServiceLoaderPluginDesc(Class<T> klass, ClassLoader loader) {
-        ClassLoader savedLoader = Plugins.compareAndSwapLoaders(loader);
-        Collection<PluginDesc<T>> result = new ArrayList<>();
-        try {
-            ServiceLoader<T> serviceLoader = ServiceLoader.load(klass, loader);
-            for (Iterator<T> iterator = serviceLoader.iterator(); iterator.hasNext(); ) {
-                T pluginImpl;
-                try {
-                    pluginImpl = iterator.next();
-                } catch (ServiceConfigurationError t) {
-                    log.error("Failed to discover {}{}", klass.getSimpleName(), reflectiveErrorDescription(t.getCause()), t);
-                    continue;
-                }
-                result.add(pluginDesc((Class<? extends T>) pluginImpl.getClass(),
-                    versionFor(pluginImpl), loader));
-            }
-        } finally {
-            Plugins.compareAndSwapLoaders(savedLoader);
+        if (range != null && range.getRecommendedVersion() != null) {
+            throw new VersionedPluginLoadingException(String.format("A soft version range is not supported for plugin loading, "
+                    + "this is an internal error as connect should automatically convert soft ranges to hard ranges. "
+                    + "Provided soft version: %s ", range));
         }
-        return result;
-    }
 
-    private static <T>  String versionFor(T pluginImpl) {
-        try {
-            if (pluginImpl instanceof Versioned) {
-                return ((Versioned) pluginImpl).version();
+        ClassLoader loader = null;
+        // the entries should be in sorted order of versions so this should end up picking the latest version which matches the range
+        for (Map.Entry<PluginDesc<?>, ClassLoader> entry : loaders.entrySet()) {
+            if (range == null || range.containsVersion(entry.getKey().encodedVersion())) {
+                loader = entry.getValue();
             }
-        } catch (Throwable t) {
-            log.error("Failed to get plugin version for " + pluginImpl.getClass(), t);
+            // if we find a plugin with the same loader as the connector, we can end our search
+            if (connectorLoader.isPresent() && connectorLoader.get().equals(loader)) {
+                break;
+            }
         }
-        return UNDEFINED_VERSION;
+
+        if (range != null && loader == null) {
+            List<String> availableVersions = loaders.keySet().stream().map(PluginDesc::version).collect(Collectors.toList());
+            throw new VersionedPluginLoadingException(String.format(
+                    "Plugin %s not found that matches the version range %s, available versions: %s",
+                    pluginName,
+                    range,
+                    availableVersions
+            ), availableVersions);
+        }
+        return loader;
     }
 
-    public static <T> String versionFor(Class<? extends T> pluginKlass) throws ReflectiveOperationException {
-        // Temporary workaround until all the plugins are versioned.
-        return Connector.class.isAssignableFrom(pluginKlass) ?
-            versionFor(pluginKlass.getDeclaredConstructor().newInstance()) : UNDEFINED_VERSION;
-    }
-
-    private static String reflectiveErrorDescription(Throwable t) {
-        if (t instanceof NoSuchMethodException) {
-            return ": Plugin class must have a no-args constructor, and cannot be a non-static inner class";
-        } else if (t instanceof SecurityException) {
-            return ": Security settings must allow reflective instantiation of plugin classes";
-        } else if (t instanceof IllegalAccessException) {
-            return ": Plugin class default constructor must be public";
-        } else if (t instanceof ExceptionInInitializerError) {
-            return ": Failed to statically initialize plugin class";
-        } else if (t instanceof InvocationTargetException) {
-            return ": Failed to invoke plugin constructor";
-        } else {
-            return "";
+    public void installDiscoveredPlugins(PluginScanResult scanResult) {
+        scanResult.forEach(pluginDesc ->
+            pluginLoaders.computeIfAbsent(pluginDesc.className(), k -> new TreeMap<>())
+                    .put(pluginDesc, pluginDesc.loader()));
+        for (String pluginClassName : pluginLoaders.keySet()) {
+            log.info("Added plugin '{}'", pluginClassName);
+        }
+        aliases.putAll(PluginUtils.computeAliases(scanResult));
+        for (Map.Entry<String, String> alias : aliases.entrySet()) {
+            log.info("Added alias '{}' to plugin '{}'", alias.getKey(), alias.getValue());
         }
     }
 
     @Override
     protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+        return loadVersionedPluginClass(name, null, resolve);
+    }
+
+    protected Class<?> loadVersionedPluginClass(
+        String name,
+        VersionRange range,
+        boolean resolve
+    ) throws VersionedPluginLoadingException, ClassNotFoundException {
+
         String fullName = aliases.getOrDefault(name, name);
-        PluginClassLoader pluginLoader = pluginClassLoader(fullName);
+        PluginClassLoader pluginLoader = pluginClassLoader(fullName, range, Optional.empty());
+        Class<?> plugin;
         if (pluginLoader != null) {
-            log.trace("Retrieving loaded class '{}' from '{}'", fullName, pluginLoader);
-            return pluginLoader.loadClass(fullName, resolve);
+            log.trace("Retrieving loaded class '{}' from '{}'", name, pluginLoader);
+            plugin = pluginLoader.loadClass(fullName, resolve);
+        } else {
+            plugin = super.loadClass(fullName, resolve);
+            if (range == null) {
+                return plugin;
+            }
+            verifyClasspathVersionedPlugin(fullName, plugin, range);
+        }
+        return plugin;
+    }
+
+    private void verifyClasspathVersionedPlugin(String fullName, Class<?> plugin, VersionRange range) throws VersionedPluginLoadingException {
+        String pluginVersion;
+        SortedMap<PluginDesc<?>, ClassLoader> scannedPlugin = pluginLoaders.get(fullName);
+
+        if (scannedPlugin == null) {
+            throw new VersionedPluginLoadingException(String.format(
+                    "Plugin %s is not part of Connect's plugin loading mechanism (ClassPath or Plugin Path)",
+                    fullName
+            ));
         }
 
-        return super.loadClass(fullName, resolve);
-    }
+        // if a plugin implements two interfaces (like JsonConverter implements both converter and header converter)
+        // it will have two entries under classpath, one for each scan. Hence, we count distinct by version.
+        List<String> classpathPlugins = scannedPlugin.keySet().stream()
+                .filter(pluginDesc -> pluginDesc.location().equals("classpath"))
+                .map(PluginDesc::version)
+                .distinct()
+                .toList();
 
-    private void addAllAliases() {
-        addAliases(connectors());
-        addAliases(converters);
-        addAliases(headerConverters);
-        addAliases(transformations);
-        addAliases(predicates);
-        addAliases(restExtensions);
-        addAliases(connectorClientConfigPolicies);
-    }
-
-    private <S> void addAliases(Collection<PluginDesc<S>> plugins) {
-        for (PluginDesc<S> plugin : plugins) {
-            if (PluginUtils.isAliasUnique(plugin, plugins)) {
-                String simple = PluginUtils.simpleName(plugin);
-                String pruned = PluginUtils.prunedName(plugin);
-                aliases.put(simple, plugin.className());
-                if (simple.equals(pruned)) {
-                    log.info("Added alias '{}' to plugin '{}'", simple, plugin.className());
-                } else {
-                    aliases.put(pruned, plugin.className());
-                    log.info(
-                            "Added aliases '{}' and '{}' to plugin '{}'",
-                            simple,
-                            pruned,
-                            plugin.className()
-                    );
-                }
+        if (classpathPlugins.size() > 1) {
+            throw new VersionedPluginLoadingException(String.format(
+                    "Plugin %s has multiple versions specified in class path, "
+                            + "only one version is allowed in class path for loading a plugin with version range",
+                    fullName
+            ));
+        } else if (classpathPlugins.isEmpty()) {
+            throw new VersionedPluginLoadingException("Invalid plugin found in classpath");
+        } else {
+            pluginVersion = classpathPlugins.get(0);
+            if (!range.containsVersion(new DefaultArtifactVersion(pluginVersion))) {
+                throw new VersionedPluginLoadingException(String.format(
+                        "Plugin %s has version %s which does not match the required version range %s",
+                        fullName,
+                        pluginVersion,
+                        range
+                ), List.of(pluginVersion));
             }
         }
     }
 
-    private static class InternalReflections extends Reflections {
-
-        public InternalReflections(Configuration configuration) {
-            super(configuration);
-        }
-
-        // When Reflections is used for parallel scans, it has a bug where it propagates ReflectionsException
-        // as RuntimeException.  Override the scan behavior to emulate the singled-threaded logic.
-        @Override
-        protected void scan(URL url) {
-            try {
-                super.scan(url);
-            } catch (ReflectionsException e) {
-                Logger log = Reflections.log;
-                if (log != null && log.isWarnEnabled()) {
-                    log.warn("could not create Vfs.Dir from url. ignoring the exception and continuing", e);
-                }
-            }
-        }
-    }
-
-    @Override
-    public URL getResource(String name) {
-        if (serviceLoaderManifestForPlugin(name)) {
-            // Default implementation of getResource searches the parent class loader and if not available/found, its own URL paths.
-            // This will enable thePluginClassLoader to limit its resource search only to its own URL paths.
-            return null;
-        } else {
-            return super.getResource(name);
-        }
-    }
-
-    @Override
-    public Enumeration<URL> getResources(String name) throws IOException {
-        if (serviceLoaderManifestForPlugin(name)) {
-            // Default implementation of getResources searches the parent class loader and also its own URL paths. This will enable the
-            // PluginClassLoader to limit its resource search to only its own URL paths.
-            return Collections.emptyEnumeration();
-        } else {
-            return super.getResources(name);
-        }
-    }
-
-    //Visible for testing
-    static boolean serviceLoaderManifestForPlugin(String name) {
-        return PLUGIN_MANIFEST_FILES.contains(name);
-    }
 }

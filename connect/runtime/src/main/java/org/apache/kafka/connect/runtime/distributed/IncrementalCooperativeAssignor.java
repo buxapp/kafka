@@ -16,29 +16,27 @@
  */
 package org.apache.kafka.connect.runtime.distributed;
 
-import java.util.Arrays;
-import java.util.Map.Entry;
-
 import org.apache.kafka.common.utils.ExponentialBackoff;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.connect.runtime.distributed.WorkerCoordinator.ConnectorsAndTasks;
 import org.apache.kafka.connect.runtime.distributed.WorkerCoordinator.WorkerLoad;
-import org.apache.kafka.connect.util.ConnectUtils;
 import org.apache.kafka.connect.storage.ClusterConfigState;
+import org.apache.kafka.connect.util.ConnectUtils;
 import org.apache.kafka.connect.util.ConnectorTaskId;
+
 import org.slf4j.Logger;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
@@ -48,6 +46,7 @@ import java.util.stream.IntStream;
 
 import static org.apache.kafka.common.message.JoinGroupResponseData.JoinGroupResponseMember;
 import static org.apache.kafka.connect.runtime.distributed.ConnectProtocol.Assignment;
+import static org.apache.kafka.connect.runtime.distributed.DistributedConfig.SCHEDULED_REBALANCE_MAX_DELAY_MS_CONFIG;
 import static org.apache.kafka.connect.runtime.distributed.IncrementalCooperativeConnectProtocol.CONNECT_PROTOCOL_V2;
 import static org.apache.kafka.connect.runtime.distributed.WorkerCoordinator.LeaderState;
 import static org.apache.kafka.connect.util.ConnectUtils.combineCollections;
@@ -88,7 +87,7 @@ public class IncrementalCooperativeAssignor implements ConnectAssignor {
         this.candidateWorkersForReassignment = new LinkedHashSet<>();
         this.delay = 0;
         this.previousGenerationId = -1;
-        this.previousMembers = Collections.emptySet();
+        this.previousMembers = Set.of();
         this.numSuccessiveRevokingRebalances = 0;
         // By default, initial interval is 1. The only corner case is when the user has set maxDelay to 0
         // in which case, the exponential backoff delay should be 0 which would return the backoff delay to be 0 always
@@ -96,7 +95,7 @@ public class IncrementalCooperativeAssignor implements ConnectAssignor {
     }
 
     @Override
-    public Map<String, ByteBuffer> performAssignment(String leaderId, String protocol,
+    public Map<String, ByteBuffer> performAssignment(String leaderId, ConnectProtocolCompatibility protocol,
                                                      List<JoinGroupResponseMember> allMemberMetadata,
                                                      WorkerCoordinator coordinator) {
         log.debug("Performing task assignment");
@@ -116,7 +115,7 @@ public class IncrementalCooperativeAssignor implements ConnectAssignor {
         log.debug("Max config offset root: {}, local snapshot config offsets root: {}",
                   maxOffset, coordinator.configSnapshot().offset());
 
-        short protocolVersion = ConnectProtocolCompatibility.fromProtocol(protocol).protocolVersion();
+        short protocolVersion = protocol.protocolVersion();
 
         Long leaderOffset = ensureLeaderConfig(maxOffset, coordinator);
         if (leaderOffset == null) {
@@ -337,10 +336,8 @@ public class IncrementalCooperativeAssignor implements ConnectAssignor {
 
         // The complete set of connectors and tasks that should be newly-assigned during this round
         ConnectorsAndTasks toAssign = new ConnectorsAndTasks.Builder()
-                .addConnectors(created.connectors())
-                .addTasks(created.tasks())
-                .addConnectors(lostAssignmentsToReassign.connectors())
-                .addTasks(lostAssignmentsToReassign.tasks())
+                .addAll(created)
+                .addAll(lostAssignmentsToReassign)
                 .build();
 
         assignConnectors(nextWorkerAssignment, toAssign.connectors());
@@ -449,8 +446,7 @@ public class IncrementalCooperativeAssignor implements ConnectAssignor {
         }
 
         final long now = time.milliseconds();
-        log.debug("Found the following connectors and tasks missing from previous assignments: "
-                + lostAssignments);
+        log.debug("Found the following connectors and tasks missing from previous assignments: {}", lostAssignments);
 
         Set<String> activeMembers = completeWorkerAssignment.stream()
                 .map(WorkerLoad::worker)
@@ -460,15 +456,21 @@ public class IncrementalCooperativeAssignor implements ConnectAssignor {
                     + "missing assignments that the leader is detecting are probably due to some "
                     + "workers failing to receive the new assignments in the previous rebalance. "
                     + "Will reassign missing tasks as new tasks");
-            lostAssignmentsToReassign.addConnectors(lostAssignments.connectors());
-            lostAssignmentsToReassign.addTasks(lostAssignments.tasks());
+            lostAssignmentsToReassign.addAll(lostAssignments);
+            return;
+        } else if (maxDelay == 0) {
+            log.debug("Scheduled rebalance delays are disabled ({} = 0); "
+                    + "reassigning all lost connectors and tasks immediately",
+                    SCHEDULED_REBALANCE_MAX_DELAY_MS_CONFIG
+            );
+            lostAssignmentsToReassign.addAll(lostAssignments);
             return;
         }
 
         if (scheduledRebalance > 0 && now >= scheduledRebalance) {
             // delayed rebalance expired and it's time to assign resources
             log.debug("Delayed rebalance expired. Reassigning lost tasks");
-            List<WorkerLoad> candidateWorkerLoad = Collections.emptyList();
+            List<WorkerLoad> candidateWorkerLoad = List.of();
             if (!candidateWorkersForReassignment.isEmpty()) {
                 candidateWorkerLoad = pickCandidateWorkerForReassignment(completeWorkerAssignment);
             }
@@ -498,8 +500,7 @@ public class IncrementalCooperativeAssignor implements ConnectAssignor {
                 }
             } else {
                 log.debug("No single candidate worker was found to assign lost tasks. Treating lost tasks as new tasks");
-                lostAssignmentsToReassign.addConnectors(lostAssignments.connectors());
-                lostAssignmentsToReassign.addTasks(lostAssignments.tasks());
+                lostAssignmentsToReassign.addAll(lostAssignments);
             }
             resetDelay();
             // Resetting the flag as now we can permit successive revoking rebalances.
@@ -603,7 +604,7 @@ public class IncrementalCooperativeAssignor implements ConnectAssignor {
         Map<String, Collection<T>> incremental = new HashMap<>();
         for (Map.Entry<String, Collection<T>> entry : base.entrySet()) {
             List<T> values = new ArrayList<>(entry.getValue());
-            values.removeAll(toSubtract.getOrDefault(entry.getKey(), Collections.emptySet()));
+            values.removeAll(toSubtract.getOrDefault(entry.getKey(), Set.of()));
             incremental.put(entry.getKey(), values);
         }
         return incremental;
@@ -640,11 +641,11 @@ public class IncrementalCooperativeAssignor implements ConnectAssignor {
             log.trace("No load-balancing revocations required; all workers are either new "
                     + "or will have all currently-assigned connectors and tasks revoked during this round"
             );
-            return Collections.emptyMap();
+            return Map.of();
         }
         if (configured.isEmpty()) {
             log.trace("No load-balancing revocations required; no connectors are currently configured on this cluster");
-            return Collections.emptyMap();
+            return Map.of();
         }
 
         Map<String, ConnectorsAndTasks.Builder> result = new HashMap<>();
@@ -702,7 +703,7 @@ public class IncrementalCooperativeAssignor implements ConnectAssignor {
                     allocatedResourceName,
                     allocatedResourceName
             );
-            return Collections.emptyMap();
+            return Map.of();
         }
 
         Map<String, Set<E>> result = new HashMap<>();
@@ -840,8 +841,7 @@ public class IncrementalCooperativeAssignor implements ConnectAssignor {
     private static void addAll(Map<String, ConnectorsAndTasks.Builder> base, Map<String, ConnectorsAndTasks> toAdd) {
         toAdd.forEach((worker, assignment) -> base
                 .computeIfAbsent(worker, w -> new ConnectorsAndTasks.Builder())
-                .addConnectors(assignment.connectors())
-                .addTasks(assignment.tasks())
+                .addAll(assignment)
         );
     }
 
@@ -885,12 +885,12 @@ public class IncrementalCooperativeAssignor implements ConnectAssignor {
         private final Set<String> allWorkers;
 
         public static final ClusterAssignment EMPTY = new ClusterAssignment(
-                Collections.emptyMap(),
-                Collections.emptyMap(),
-                Collections.emptyMap(),
-                Collections.emptyMap(),
-                Collections.emptyMap(),
-                Collections.emptyMap()
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                Map.of()
         );
 
         public ClusterAssignment(
@@ -908,7 +908,7 @@ public class IncrementalCooperativeAssignor implements ConnectAssignor {
             this.allAssignedConnectors = allAssignedConnectors;
             this.allAssignedTasks = allAssignedTasks;
             this.allWorkers = combineCollections(
-                    Arrays.asList(newlyAssignedConnectors, newlyAssignedTasks, newlyRevokedConnectors, newlyRevokedTasks, allAssignedConnectors, allAssignedTasks),
+                    List.of(newlyAssignedConnectors, newlyAssignedTasks, newlyRevokedConnectors, newlyRevokedTasks, allAssignedConnectors, allAssignedTasks),
                     Map::keySet,
                     Collectors.toSet()
             );
@@ -919,7 +919,7 @@ public class IncrementalCooperativeAssignor implements ConnectAssignor {
         }
 
         public Collection<String> newlyAssignedConnectors(String worker) {
-            return newlyAssignedConnectors.getOrDefault(worker, Collections.emptySet());
+            return newlyAssignedConnectors.getOrDefault(worker, Set.of());
         }
 
         public Map<String, Collection<ConnectorTaskId>> newlyAssignedTasks() {
@@ -927,7 +927,7 @@ public class IncrementalCooperativeAssignor implements ConnectAssignor {
         }
 
         public Collection<ConnectorTaskId> newlyAssignedTasks(String worker) {
-            return newlyAssignedTasks.getOrDefault(worker, Collections.emptySet());
+            return newlyAssignedTasks.getOrDefault(worker, Set.of());
         }
 
         public Map<String, Collection<String>> newlyRevokedConnectors() {
@@ -935,7 +935,7 @@ public class IncrementalCooperativeAssignor implements ConnectAssignor {
         }
 
         public Collection<String> newlyRevokedConnectors(String worker) {
-            return newlyRevokedConnectors.getOrDefault(worker, Collections.emptySet());
+            return newlyRevokedConnectors.getOrDefault(worker, Set.of());
         }
 
         public Map<String, Collection<ConnectorTaskId>> newlyRevokedTasks() {
@@ -943,7 +943,7 @@ public class IncrementalCooperativeAssignor implements ConnectAssignor {
         }
 
         public Collection<ConnectorTaskId> newlyRevokedTasks(String worker) {
-            return newlyRevokedTasks.getOrDefault(worker, Collections.emptySet());
+            return newlyRevokedTasks.getOrDefault(worker, Set.of());
         }
 
         public Map<String, Collection<String>> allAssignedConnectors() {

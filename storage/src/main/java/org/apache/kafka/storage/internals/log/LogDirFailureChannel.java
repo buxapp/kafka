@@ -16,14 +16,14 @@
  */
 package org.apache.kafka.storage.internals.log;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /*
  * LogDirFailureChannel allows an external thread to block waiting for new offline log dirs.
@@ -69,7 +69,7 @@ public class LogDirFailureChannel {
      * The method will wait if necessary until a new offline log directory becomes available
      * 
      * @return The next offline log dir.
-     * @throws InterruptedException
+     * @throws InterruptedException if the current thread is interrupted while waiting
      */
     public String takeNextOfflineLogDir() throws InterruptedException {
         return offlineLogDirQueue.take();

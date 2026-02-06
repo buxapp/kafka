@@ -16,11 +16,11 @@
  */
 package org.apache.kafka.common.metrics.stats;
 
-import java.util.Locale;
-import java.util.concurrent.TimeUnit;
-
 import org.apache.kafka.common.metrics.MeasurableStat;
 import org.apache.kafka.common.metrics.MetricConfig;
+
+import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 
 import static org.apache.kafka.common.metrics.internals.MetricsUtils.convert;
 
@@ -34,6 +34,7 @@ public class Rate implements MeasurableStat {
 
     protected final TimeUnit unit;
     protected final SampledStat stat;
+    protected final long timeWindowMs;
 
     public Rate() {
         this(TimeUnit.SECONDS);
@@ -48,8 +49,18 @@ public class Rate implements MeasurableStat {
     }
 
     public Rate(TimeUnit unit, SampledStat stat) {
-        this.stat = stat;
+        this(unit, stat, -1);
+    }
+
+    public Rate(TimeUnit unit, SampledStat stat, long window) {
         this.unit = unit;
+        this.stat = stat;
+        if (window > 0) {
+            this.timeWindowMs = TimeUnit.MILLISECONDS.convert(window, unit);
+            this.stat.withTimeWindow(window, unit);
+        } else  {
+            this.timeWindowMs = -1;
+        }
     }
 
     public String unitName() {
@@ -74,22 +85,27 @@ public class Rate implements MeasurableStat {
         /*
          * Here we check the total amount of time elapsed since the oldest non-obsolete window.
          * This give the total windowSize of the batch which is the time used for Rate computation.
-         * However, there is an issue if we do not have sufficient data for e.g. if only 1 second has elapsed in a 30 second
+         * However, there is an issue if we do not have sufficient data for e.g. if only 1 second has elapsed in a 30-second
          * window, the measured rate will be very high.
-         * Hence we assume that the elapsed time is always N-1 complete windows plus whatever fraction of the final window is complete.
+         * Hence, we assume that the elapsed time is always N-1 complete windows plus whatever fraction of the final window is complete.
          *
          * Note that we could simply count the amount of time elapsed in the current window and add n-1 windows to get the total time,
          * but this approach does not account for sleeps. SampledStat only creates samples whenever record is called,
          * if no record is called for a period of time that time is not accounted for in windowSize and produces incorrect results.
+         *
+         * Note also, that totalElapsedTimeMs can be larger than the monitored window size,
+         * if the oldest sample started before the window while overlapping it.
          */
-        long totalElapsedTimeMs = now - stat.oldest(now).lastWindowMs;
+        long totalElapsedTimeMs = now - stat.oldest(now).startTimeMs;
+        // If explicit time window is provided, use that instead of the config value.
+        long windowMs = timeWindowMs > 0 ? timeWindowMs : config.timeWindowMs();
         // Check how many full windows of data we have currently retained
-        int numFullWindows = (int) (totalElapsedTimeMs / config.timeWindowMs());
+        int numFullWindows = (int) (totalElapsedTimeMs / windowMs);
         int minFullWindows = config.samples() - 1;
 
         // If the available windows are less than the minimum required, add the difference to the totalElapsedTime
         if (numFullWindows < minFullWindows)
-            totalElapsedTimeMs += (minFullWindows - numFullWindows) * config.timeWindowMs();
+            totalElapsedTimeMs += (minFullWindows - numFullWindows) * windowMs;
 
         // If window size is being calculated at the exact beginning of the window with no prior samples, the window size
         // will result in a value of 0. Calculation of rate over a window is size 0 is undefined, hence, we assume the

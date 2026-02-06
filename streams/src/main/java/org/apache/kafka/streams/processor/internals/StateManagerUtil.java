@@ -16,10 +16,6 @@
  */
 package org.apache.kafka.streams.processor.internals;
 
-import java.io.IOException;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicReference;
-
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.streams.errors.LockException;
@@ -31,7 +27,12 @@ import org.apache.kafka.streams.processor.StateStore;
 import org.apache.kafka.streams.processor.TaskId;
 import org.apache.kafka.streams.processor.internals.Task.TaskType;
 import org.apache.kafka.streams.state.internals.RecordConverter;
+
 import org.slf4j.Logger;
+
+import java.io.IOException;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.apache.kafka.streams.state.internals.RecordConverters.identity;
 import static org.apache.kafka.streams.state.internals.RecordConverters.rawValueToTimestampedValue;
@@ -86,7 +87,7 @@ final class StateManagerUtil {
                                     final ProcessorTopology topology,
                                     final ProcessorStateManager stateMgr,
                                     final StateDirectory stateDirectory,
-                                    final InternalProcessorContext processorContext) {
+                                    final InternalProcessorContext<?, ?> processorContext) {
         if (topology.stateStores().isEmpty()) {
             return;
         }
@@ -146,7 +147,7 @@ final class StateManagerUtil {
                     }
                 }
             } else {
-                log.error("Failed to acquire lock while closing the state store for {} task {}", taskType, id);
+                log.warn("Unable to acquire lock while closing the state store for {} task {}", taskType, id);
             }
         } catch (final IOException e) {
             final ProcessorStateException exception = new ProcessorStateException(

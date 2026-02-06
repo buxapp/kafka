@@ -16,22 +16,31 @@
  */
 package org.apache.kafka.tools;
 
-import net.sourceforge.argparse4j.ArgumentParsers;
-import net.sourceforge.argparse4j.inf.ArgumentParser;
-import net.sourceforge.argparse4j.inf.Namespace;
-import net.sourceforge.argparse4j.inf.Subparser;
-import net.sourceforge.argparse4j.inf.Subparsers;
 import org.apache.kafka.clients.admin.Admin;
+import org.apache.kafka.clients.admin.DescribeClusterOptions;
+import org.apache.kafka.common.Node;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.utils.Exit;
 import org.apache.kafka.common.utils.Utils;
+import org.apache.kafka.server.util.CommandLineUtils;
+
+import net.sourceforge.argparse4j.ArgumentParsers;
+import net.sourceforge.argparse4j.inf.ArgumentParser;
+import net.sourceforge.argparse4j.inf.ArgumentParserException;
+import net.sourceforge.argparse4j.inf.MutuallyExclusiveGroup;
+import net.sourceforge.argparse4j.inf.Namespace;
+import net.sourceforge.argparse4j.inf.Subparser;
+import net.sourceforge.argparse4j.inf.Subparsers;
 
 import java.io.PrintStream;
-import java.util.Arrays;
+import java.util.Collection;
+import java.util.List;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.concurrent.ExecutionException;
 
 import static net.sourceforge.argparse4j.impl.Arguments.store;
+import static net.sourceforge.argparse4j.impl.Arguments.storeTrue;
 
 public class ClusterTool {
 
@@ -64,32 +73,49 @@ public class ClusterTool {
                 .help("Get information about the ID of a cluster.");
         Subparser unregisterParser = subparsers.addParser("unregister")
                 .help("Unregister a broker.");
-        for (Subparser subpparser : Arrays.asList(clusterIdParser, unregisterParser)) {
-            subpparser.addArgument("--bootstrap-server", "-b")
+        Subparser listEndpoints = subparsers.addParser("list-endpoints")
+                .help("List endpoints");
+        for (Subparser subpparser : List.of(clusterIdParser, unregisterParser, listEndpoints)) {
+            MutuallyExclusiveGroup connectionOptions = subpparser.addMutuallyExclusiveGroup().required(true);
+            connectionOptions.addArgument("--bootstrap-server", "-b")
                     .action(store())
                     .help("A list of host/port pairs to use for establishing the connection to the Kafka cluster.");
-            subpparser.addArgument("--config", "-c")
+            connectionOptions.addArgument("--bootstrap-controller", "-C")
                     .action(store())
-                    .help("A property file containing configurations for the Admin client.");
+                    .help("A list of host/port pairs to use for establishing the connection to the KRaft controllers.");
+            subpparser.addArgument("--config")
+                    .action(store())
+                    .help("(DEPRECATED) A property file containing configurations for the Admin client. " +
+                            "This option will be removed in a future version. Use --command-config instead.");
+            subpparser.addArgument("--command-config", "-c")
+                    .action(store())
+                    .help("Config properties file for the Admin client.");
         }
         unregisterParser.addArgument("--id", "-i")
                 .type(Integer.class)
                 .action(store())
                 .required(true)
                 .help("The ID of the broker to unregister.");
+        listEndpoints.addArgument("--include-fenced-brokers")
+                .action(storeTrue())
+                .help("Whether to include fenced brokers when listing broker endpoints");
 
         Namespace namespace = parser.parseArgsOrFail(args);
         String command = namespace.getString("command");
-        String configPath = namespace.getString("config");
-        Properties properties = (configPath == null) ? new Properties() : Utils.loadProps(configPath);
+        String configFile = namespace.getString("config");
+        String commandConfigFile = namespace.getString("command_config");
+        if (configFile != null && commandConfigFile != null) {
+            throw new ArgumentParserException("--config and --command-config cannot be specified together.", parser);
+        }
+        if (configFile != null) {
+            System.out.println("Option --config has been deprecated and will be removed in a future version. Use --command-config instead.");
+            commandConfigFile = configFile;
+        }
+        Properties properties = (commandConfigFile != null) ? Utils.loadProps(commandConfigFile) : new Properties();
 
-        String bootstrapServer = namespace.getString("bootstrap_server");
-        if (bootstrapServer != null) {
-            properties.setProperty("bootstrap.servers", bootstrapServer);
-        }
-        if (properties.getProperty("bootstrap.servers") == null) {
-            throw new TerseException("Please specify --bootstrap-server.");
-        }
+        CommandLineUtils.initializeBootstrapProperties(properties,
+                Optional.ofNullable(namespace.getString("bootstrap_server")),
+                Optional.ofNullable(namespace.getString("bootstrap_controller")));
 
         switch (command) {
             case "cluster-id": {
@@ -101,6 +127,17 @@ public class ClusterTool {
             case "unregister": {
                 try (Admin adminClient = Admin.create(properties)) {
                     unregisterCommand(System.out, adminClient, namespace.getInt("id"));
+                }
+                break;
+            }
+            case "list-endpoints": {
+                try (Admin adminClient = Admin.create(properties)) {
+                    boolean includeFencedBrokers = Optional.of(namespace.getBoolean("include_fenced_brokers")).orElse(false);
+                    boolean listControllerEndpoints = namespace.getString("bootstrap_controller") != null;
+                    if (includeFencedBrokers && listControllerEndpoints) {
+                        throw new IllegalArgumentException("The option --include-fenced-brokers is only supported with --bootstrap-server option");
+                    }
+                    listEndpoints(System.out, adminClient, listControllerEndpoints, includeFencedBrokers);
                 }
                 break;
             }
@@ -126,6 +163,46 @@ public class ClusterTool {
             Throwable cause = ee.getCause();
             if (cause instanceof UnsupportedVersionException) {
                 stream.println("The target cluster does not support the broker unregistration API.");
+            } else {
+                throw ee;
+            }
+        }
+    }
+
+    static void listEndpoints(PrintStream stream, Admin adminClient, boolean listControllerEndpoints, boolean includeFencedBrokers) throws Exception {
+        try {
+            DescribeClusterOptions option = new DescribeClusterOptions().includeFencedBrokers(includeFencedBrokers);
+            Collection<Node> nodes = adminClient.describeCluster(option).nodes().get();
+
+            String maxHostLength = String.valueOf(nodes.stream().map(node -> node.host().length()).max(Integer::compareTo).orElse(100));
+            String maxRackLength = String.valueOf(nodes.stream().filter(Node::hasRack).map(node -> node.rack().length()).max(Integer::compareTo).orElse(10));
+
+            if (listControllerEndpoints) {
+                String format = "%-10s %-" + maxHostLength + "s %-10s %-" + maxRackLength + "s %-15s%n";
+                stream.printf(format, "ID", "HOST", "PORT", "RACK", "ENDPOINT_TYPE");
+                nodes.forEach(node -> stream.printf(format,
+                        node.idString(),
+                        node.host(),
+                        node.port(),
+                        node.rack(),
+                        "controller"
+                ));
+            } else {
+                String format = "%-10s %-" + maxHostLength + "s %-10s %-" + maxRackLength + "s %-10s %-15s%n";
+                stream.printf(format, "ID", "HOST", "PORT", "RACK", "STATE", "ENDPOINT_TYPE");
+                nodes.forEach(node -> stream.printf(format,
+                        node.idString(),
+                        node.host(),
+                        node.port(),
+                        node.rack(),
+                        node.isFenced() ? "fenced" : "unfenced",
+                        "broker"
+                ));
+            }
+        } catch (ExecutionException ee) {
+            Throwable cause = ee.getCause();
+            if (cause instanceof UnsupportedVersionException) {
+                stream.println(ee.getCause().getMessage());
             } else {
                 throw ee;
             }

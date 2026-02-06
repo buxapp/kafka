@@ -30,6 +30,7 @@ import org.apache.kafka.common.requests.AbstractResponse;
 import org.apache.kafka.common.requests.WriteTxnMarkersRequest;
 import org.apache.kafka.common.requests.WriteTxnMarkersResponse;
 import org.apache.kafka.common.utils.LogContext;
+
 import org.slf4j.Logger;
 
 import java.util.List;
@@ -52,10 +53,11 @@ public class AbortTransactionHandler extends AdminApiHandler.Batched<TopicPartit
         this.lookupStrategy = new PartitionLeaderStrategy(logContext);
     }
 
-    public static AdminApiFuture.SimpleAdminApiFuture<TopicPartition, Void> newFuture(
-        Set<TopicPartition> topicPartitions
+    public static PartitionLeaderStrategy.PartitionLeaderFuture<Void> newFuture(
+        Set<TopicPartition> topicPartitions,
+        PartitionLeaderCache partitionLeaderCache
     ) {
-        return AdminApiFuture.forKeys(topicPartitions);
+        return new PartitionLeaderStrategy.PartitionLeaderFuture<>(topicPartitions, partitionLeaderCache);
     }
 
     @Override

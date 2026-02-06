@@ -19,20 +19,21 @@ package org.apache.kafka.connect.mirror;
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.clients.admin.FakeForwardingAdmin;
 import org.apache.kafka.clients.admin.ForwardingAdmin;
-import org.apache.kafka.common.config.ConfigException;
-import org.apache.kafka.common.config.types.Password;
-import org.apache.kafka.common.config.provider.ConfigProvider;
 import org.apache.kafka.common.config.ConfigData;
+import org.apache.kafka.common.config.ConfigException;
+import org.apache.kafka.common.config.provider.ConfigProvider;
+import org.apache.kafka.common.config.types.Password;
 import org.apache.kafka.common.metrics.FakeMetricsReporter;
+import org.apache.kafka.common.security.auth.SecurityProtocol;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Arrays;
-import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -104,10 +105,12 @@ public class MirrorMakerConfigTest {
             "replication.policy.separator is picked up in MirrorClientConfig");
         assertEquals("b__topic1", aClientConfig.replicationPolicy().formatRemoteTopic("b", "topic1"),
             "replication.policy.separator is honored");
-        assertEquals(clusterABootstrap, aClientConfig.adminConfig().get("bootstrap.servers"),
-            "client configs include boostrap.servers");
-        assertEquals(ForwardingAdmin.class.getName(), aClientConfig.forwardingAdmin(aClientConfig.adminConfig()).getClass().getName(),
-                "Cluster a uses the default ForwardingAdmin");
+        assertEquals(Arrays.stream(clusterABootstrap.split(",")).map(String::trim).toList(), aClientConfig.adminConfig().get("bootstrap.servers"),
+            "client configs include bootstrap.servers");
+        try (ForwardingAdmin forwardingAdmin = aClientConfig.forwardingAdmin(aClientConfig.adminConfig())) {
+            assertEquals(ForwardingAdmin.class.getName(), forwardingAdmin.getClass().getName(),
+                    "Cluster a uses the default ForwardingAdmin");
+        }
         assertEquals("PLAINTEXT", aClientConfig.adminConfig().get("security.protocol"),
             "client configs include security.protocol");
         assertEquals("SSL", aClientConfig.producerConfig().get("security.protocol"),
@@ -115,7 +118,7 @@ public class MirrorMakerConfigTest {
         assertFalse(aClientConfig.adminConfig().containsKey("xxx"),
             "unknown properties aren't included in client configs");
         assertFalse(aClientConfig.adminConfig().containsKey("metric.reporters"),
-            "top-leve metrics reporters aren't included in client configs");
+            "top-level metrics reporters aren't included in client configs");
         assertEquals("secret2", aClientConfig.getPassword("ssl.key.password").value(),
             "security properties are translated from external sources");
         assertEquals("secret2", ((Password) aClientConfig.adminConfig().get("ssl.key.password")).value(),
@@ -124,8 +127,10 @@ public class MirrorMakerConfigTest {
             "client configs should not include metrics reporter");
         assertFalse(bClientConfig.adminConfig().containsKey("metrics.reporter"),
             "client configs should not include metrics reporter");
-        assertEquals(FakeForwardingAdmin.class.getName(), bClientConfig.forwardingAdmin(bClientConfig.adminConfig()).getClass().getName(),
-                "Cluster b should use the FakeForwardingAdmin");
+        try (ForwardingAdmin forwardingAdmin = bClientConfig.forwardingAdmin(bClientConfig.adminConfig())) {
+            assertEquals(FakeForwardingAdmin.class.getName(), forwardingAdmin.getClass().getName(),
+                    "Cluster b should use the FakeForwardingAdmin");
+        }
     }
 
     @Test
@@ -146,11 +151,11 @@ public class MirrorMakerConfigTest {
         MirrorSourceConfig sourceConfig = new MirrorSourceConfig(connectorProps);
         assertEquals(100, (int) sourceConfig.getInt("tasks.max"),
             "Connector properties like tasks.max should be passed through to underlying Connectors.");
-        assertEquals(Collections.singletonList("topic-1"), sourceConfig.getList("topics"),
+        assertEquals(List.of("topic-1"), sourceConfig.getList("topics"),
             "Topics include should be passed through to underlying Connectors.");
-        assertEquals(Collections.singletonList("property-3"), sourceConfig.getList("config.properties.exclude"),
+        assertEquals(List.of("property-3"), sourceConfig.getList("config.properties.exclude"),
                 "Config properties exclude should be passed through to underlying Connectors.");
-        assertEquals(Collections.singletonList("FakeMetricsReporter"), sourceConfig.getList("metric.reporters"),
+        assertEquals(List.of("FakeMetricsReporter"), sourceConfig.getList("metric.reporters"),
                 "Metrics reporters should be passed through to underlying Connectors.");
         assertEquals("DefaultTopicFilter", sourceConfig.getClass("topic.filter.class").getSimpleName(),
                 "Filters should be passed through to underlying Connectors.");
@@ -160,57 +165,9 @@ public class MirrorMakerConfigTest {
                 "Unknown properties should not be passed through to Connectors.");
 
         MirrorCheckpointConfig checkpointConfig = new MirrorCheckpointConfig(connectorProps);
-        assertEquals(Collections.singletonList("group-2"), checkpointConfig.getList("groups"),
+        assertEquals(List.of("group-2"), checkpointConfig.getList("groups"),
             "Groups include should be passed through to underlying Connectors.");
 
-    }
-
-    @Test
-    public void testConfigBackwardsCompatibility() {
-        MirrorMakerConfig mirrorConfig = new MirrorMakerConfig(makeProps(
-            "clusters", "a, b",
-            "groups.blacklist", "group-7",
-            "topics.blacklist", "topic3",
-            "config.properties.blacklist", "property-3",
-            "topic.filter.class", DefaultTopicFilter.class.getName()));
-        SourceAndTarget sourceAndTarget = new SourceAndTarget("source", "target");
-        Map<String, String> connectorProps = mirrorConfig.connectorBaseConfig(sourceAndTarget,
-                                                                              MirrorSourceConnector.class);
-        MirrorSourceConfig sourceConfig = new MirrorSourceConfig(connectorProps);
-        DefaultTopicFilter.TopicFilterConfig filterConfig =
-            new DefaultTopicFilter.TopicFilterConfig(connectorProps);
-
-        assertEquals(Collections.singletonList("topic3"), filterConfig.getList("topics.exclude"),
-            "Topics exclude should be backwards compatible.");
-
-        assertEquals(Collections.singletonList("property-3"), sourceConfig.getList("config.properties.exclude"),
-            "Config properties exclude should be backwards compatible.");
-
-        MirrorCheckpointConfig checkpointConfig = new MirrorCheckpointConfig(connectorProps);
-        assertEquals(Collections.singletonList("group-7"), checkpointConfig.getList("groups.exclude"),
-            "Groups exclude should be backwards compatible.");
-
-    }
-
-    @Test
-    public void testConfigBackwardsCompatibilitySourceTarget() {
-        MirrorMakerConfig mirrorConfig = new MirrorMakerConfig(makeProps(
-            "clusters", "a, b",
-            "source->target.topics.blacklist", "topic3",
-            "source->target.groups.blacklist", "group-7",
-            "topic.filter.class", DefaultTopicFilter.class.getName()));
-        SourceAndTarget sourceAndTarget = new SourceAndTarget("source", "target");
-        Map<String, String> connectorProps = mirrorConfig.connectorBaseConfig(sourceAndTarget,
-                                                                              MirrorSourceConnector.class);
-        MirrorCheckpointConfig connectorConfig = new MirrorCheckpointConfig(connectorProps);
-        DefaultTopicFilter.TopicFilterConfig filterConfig =
-            new DefaultTopicFilter.TopicFilterConfig(connectorProps);
-
-        assertEquals(Collections.singletonList("topic3"), filterConfig.getList("topics.exclude"),
-            "Topics exclude should be backwards compatible.");
-
-        assertEquals(Collections.singletonList("group-7"), connectorConfig.getList("groups.exclude"),
-            "Groups exclude should be backwards compatible.");
     }
 
     @Test
@@ -222,11 +179,11 @@ public class MirrorMakerConfigTest {
         SourceAndTarget sourceAndTarget = new SourceAndTarget("source", "target");
         Map<String, String> connectorProps = mirrorConfig.connectorBaseConfig(sourceAndTarget,
             MirrorSourceConnector.class);
-        DefaultTopicFilter.TopicFilterConfig filterConfig = 
+        DefaultTopicFilter.TopicFilterConfig filterConfig =
             new DefaultTopicFilter.TopicFilterConfig(connectorProps);
-        assertEquals(Arrays.asList("topic1", "topic2"), filterConfig.getList("topics"),
+        assertEquals(List.of("topic1", "topic2"), filterConfig.getList("topics"),
             "source->target.topics should be passed through to TopicFilters.");
-        assertEquals(Collections.singletonList("topic3"), filterConfig.getList("topics.exclude"),
+        assertEquals(List.of("topic3"), filterConfig.getList("topics.exclude"),
             "source->target.topics.exclude should be passed through to TopicFilters.");
     }
 
@@ -251,6 +208,7 @@ public class MirrorMakerConfigTest {
         assertEquals("b->a", aProps.get("client.id"));
         assertEquals("123", aProps.get("offset.storage.replication.factor"));
         assertEquals("__", aProps.get("replication.policy.separator"));
+        assertEquals("fake", aProps.get("config.providers"));
         Map<String, String> bProps = mirrorConfig.workerConfig(b);
         assertEquals("a->b", bProps.get("client.id"));
         assertEquals("456", bProps.get("status.storage.replication.factor"));
@@ -359,8 +317,21 @@ public class MirrorMakerConfigTest {
     @Test
     public void testClientInvalidSecurityProtocol() {
         ConfigException ce = assertThrows(ConfigException.class,
-                () -> new MirrorClientConfig(makeProps(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG, "abc")));
+                () -> new MirrorClientConfig(makeProps(
+                        CommonClientConfigs.SECURITY_PROTOCOL_CONFIG, "abc",
+                        CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092"
+                )));
         assertTrue(ce.getMessage().contains(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG));
+    }
+
+    @Test
+    public void testCaseInsensitiveSecurityProtocol() {
+        final String saslSslLowerCase = SecurityProtocol.SASL_SSL.name.toLowerCase(Locale.ROOT);
+        final MirrorClientConfig config = new MirrorClientConfig(makeProps(
+                CommonClientConfigs.SECURITY_PROTOCOL_CONFIG, saslSslLowerCase,
+                CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092"
+        ));
+        assertEquals(saslSslLowerCase, config.originalsStrings().get(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG));
     }
 
     @Test
@@ -400,7 +371,7 @@ public class MirrorMakerConfigTest {
 
     public static class FakeConfigProvider implements ConfigProvider {
 
-        Map<String, String> secrets = Collections.singletonMap("password", "secret2");
+        Map<String, String> secrets = Map.of("password", "secret2");
 
         @Override
         public void configure(Map<String, ?> props) {
