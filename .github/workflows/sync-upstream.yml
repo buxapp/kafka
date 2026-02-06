@@ -114,7 +114,7 @@ jobs:
                 
                 # Build issue body in a temp file
                 {
-                  echo "## 🤖 Merge Conflict Detected - GitHub Copilot Workspace Available"
+                  echo "## Merge Conflict Detected - GitHub Copilot Workspace Available"
                   echo ""
                   echo "Automatic fork synchronization encountered a merge conflict on the \`$branch\` branch."
                   echo ""
@@ -146,13 +146,13 @@ jobs:
                   echo "- **Preserve all BUX-specific patches during resolution**"
                   echo "- Test the merged code before pushing"
                   echo "- Close this issue once conflicts are resolved"
-                } > /tmp/merge_conflict_issue.md
+                } > "/tmp/merge_conflict_issue_${branch}_$$.md"
                 
                 # Create issue with copilot-workspace label
                 gh issue create \
                   --title "Merge Conflict: Resolve using GitHub Copilot Workspace on $branch" \
                   --label "sync,conflict,copilot-workspace" \
-                  --body-file /tmp/merge_conflict_issue.md \
+                  --body-file "/tmp/merge_conflict_issue_${branch}_$$.md" \
                   || echo "Failed to create issue"
               fi
             fi
