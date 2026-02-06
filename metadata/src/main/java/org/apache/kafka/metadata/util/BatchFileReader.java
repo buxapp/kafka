@@ -29,6 +29,7 @@ import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.metadata.MetadataRecordSerde;
 import org.apache.kafka.raft.Batch;
 import org.apache.kafka.server.common.ApiMessageAndVersion;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -68,22 +69,7 @@ public final class BatchFileReader implements Iterator<BatchFileReader.BatchAndT
         }
     }
 
-    public static class BatchAndType {
-        private final Batch<ApiMessageAndVersion> batch;
-        private final boolean isControl;
-
-        public BatchAndType(Batch<ApiMessageAndVersion> batch, boolean isControl) {
-            this.batch = batch;
-            this.isControl = isControl;
-        }
-
-        public Batch<ApiMessageAndVersion> batch() {
-            return batch;
-        }
-
-        public boolean isControl() {
-            return isControl;
-        }
+    public record BatchAndType(Batch<ApiMessageAndVersion> batch, boolean isControl) {
     }
 
     private final FileRecords fileRecords;
@@ -113,8 +99,7 @@ public final class BatchFileReader implements Iterator<BatchFileReader.BatchAndT
 
     private BatchAndType nextControlBatch(FileChannelRecordBatch input) {
         List<ApiMessageAndVersion> messages = new ArrayList<>();
-        for (Iterator<Record> iter = input.iterator(); iter.hasNext(); ) {
-            Record record = iter.next();
+        for (Record record : input) {
             try {
                 short typeId = ControlRecordType.parseTypeId(record.key());
                 ControlRecordType type = ControlRecordType.fromTypeId(typeId);
@@ -179,6 +164,6 @@ public final class BatchFileReader implements Iterator<BatchFileReader.BatchAndT
         } catch (Exception e) {
             log.error("Error closing fileRecords", e);
         }
-        this.batchIterator = Collections.<FileChannelRecordBatch>emptyList().iterator();
+        this.batchIterator = Collections.emptyIterator();
     }
 }

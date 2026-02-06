@@ -19,9 +19,9 @@ package org.apache.kafka.connect.mirror;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.config.ConfigException;
+
 import org.junit.jupiter.api.Test;
 
-import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -37,7 +37,7 @@ public class MirrorSourceConfigTest {
 
     @Test
     public void testTaskConfigTopicPartitions() {
-        List<TopicPartition> topicPartitions = Arrays.asList(new TopicPartition("topic-1", 2),
+        List<TopicPartition> topicPartitions = List.of(new TopicPartition("topic-1", 2),
                 new TopicPartition("topic-3", 4), new TopicPartition("topic-5", 6));
         MirrorSourceConfig config = new MirrorSourceConfig(makeProps());
         Map<String, String> props = config.taskConfigForTopicPartitions(topicPartitions, 1);
@@ -63,17 +63,6 @@ public class MirrorSourceConfigTest {
                 "config.properties.exclude incorrectly excluded prop1");
         assertFalse(config.configPropertyFilter().shouldReplicateConfigProperty("prop2"),
                 "config.properties.exclude incorrectly included prop2");
-    }
-
-    @Test
-    public void testConfigBackwardsCompatibility() {
-        MirrorSourceConfig config = new MirrorSourceConfig(
-                makeProps("config.properties.blacklist", "prop1",
-                        "topics.blacklist", "topic-1"));
-        assertFalse(config.configPropertyFilter().shouldReplicateConfigProperty("prop1"));
-        assertTrue(config.configPropertyFilter().shouldReplicateConfigProperty("prop2"));
-        assertFalse(config.topicFilter().shouldReplicateTopic("topic-1"));
-        assertTrue(config.topicFilter().shouldReplicateTopic("topic-2"));
     }
 
     @Test

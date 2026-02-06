@@ -16,13 +16,15 @@
  */
 package org.apache.kafka.clients.consumer.internals;
 
+import org.apache.kafka.common.MetricNameTemplate;
+import org.apache.kafka.common.metrics.Metrics;
+
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-import org.apache.kafka.common.MetricNameTemplate;
-import org.apache.kafka.common.metrics.Metrics;
+import static org.apache.kafka.clients.consumer.internals.ConsumerUtils.CONSUMER_METRIC_GROUP_PREFIX;
 
 public class ConsumerMetrics {
     
@@ -32,13 +34,12 @@ public class ConsumerMetrics {
         this.fetcherMetrics = new FetchMetricsRegistry(metricsTags, metricGrpPrefix);
     }
 
-    public ConsumerMetrics(String metricGroupPrefix) {
-        this(new HashSet<String>(), metricGroupPrefix);
+    public ConsumerMetrics() {
+        this(new HashSet<>(), CONSUMER_METRIC_GROUP_PREFIX);
     }
 
     private List<MetricNameTemplate> getAllTemplates() {
-        List<MetricNameTemplate> l = new ArrayList<>(this.fetcherMetrics.getAllTemplates());
-        return l;
+        return new ArrayList<>(this.fetcherMetrics.getAllTemplates());
     }
 
     public static void main(String[] args) {

@@ -17,6 +17,7 @@
 package org.apache.kafka.clients.consumer;
 
 import org.apache.kafka.common.requests.JoinGroupRequest;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
@@ -26,9 +27,10 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@SuppressWarnings("removal")
 public class ConsumerGroupMetadataTest {
 
-    private String groupId = "group";
+    private final String groupId = "group";
 
     @Test
     public void testAssignmentConstructor() {

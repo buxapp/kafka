@@ -16,33 +16,30 @@
  */
 package org.apache.kafka.connect.mirror;
 
-import java.util.Arrays;
-import java.util.Map.Entry;
-
-import org.apache.kafka.common.security.auth.SecurityProtocol;
-import org.apache.kafka.common.utils.Utils;
+import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.common.config.ConfigDef;
-import org.apache.kafka.common.config.ConfigDef.Type;
 import org.apache.kafka.common.config.ConfigDef.Importance;
-import org.apache.kafka.common.config.provider.ConfigProvider;
+import org.apache.kafka.common.config.ConfigDef.Type;
 import org.apache.kafka.common.config.ConfigTransformer;
-import org.apache.kafka.clients.CommonClientConfigs;
+import org.apache.kafka.common.config.provider.ConfigProvider;
+import org.apache.kafka.common.security.auth.SecurityProtocol;
+import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.connect.runtime.WorkerConfig;
 import org.apache.kafka.connect.runtime.distributed.DistributedConfig;
 import org.apache.kafka.connect.runtime.isolation.Plugins;
 import org.apache.kafka.connect.runtime.rest.RestServerConfig;
 
-import java.util.Map;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Set;
-import java.util.HashSet;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Set;
 import java.util.stream.Collectors;
 
-import static org.apache.kafka.common.config.ConfigDef.ValidString.in;
+import static org.apache.kafka.common.config.ConfigDef.CaseInsensitiveValidString.in;
 
 /** Top-level config describing replication flows between multiple Kafka clusters.
  *  <p>
@@ -60,7 +57,7 @@ import static org.apache.kafka.common.config.ConfigDef.ValidString.in;
  *      --->%---
  * </pre>
  */
-public class MirrorMakerConfig extends AbstractConfig {
+public final class MirrorMakerConfig extends AbstractConfig {
 
     public static final String CLUSTERS_CONFIG = "clusters";
     private static final String CLUSTERS_DOC = "List of cluster aliases.";
@@ -216,14 +213,9 @@ public class MirrorMakerConfig extends AbstractConfig {
 
     Set<String> allConfigNames() {
         Set<String> allNames = new HashSet<>();
-        List<ConfigDef> connectorConfigDefs = Arrays.asList(
-                MirrorCheckpointConfig.CONNECTOR_CONFIG_DEF,
-                MirrorSourceConfig.CONNECTOR_CONFIG_DEF,
-                MirrorHeartbeatConfig.CONNECTOR_CONFIG_DEF
-        );
-        for (ConfigDef cd : connectorConfigDefs) {
-            allNames.addAll(cd.names());
-        }
+        allNames.addAll(MirrorCheckpointConfig.CONNECTOR_CONFIG_DEF.names());
+        allNames.addAll(MirrorSourceConfig.CONNECTOR_CONFIG_DEF.names());
+        allNames.addAll(MirrorHeartbeatConfig.CONNECTOR_CONFIG_DEF.names());
         return allNames;
     }
 
@@ -285,11 +277,11 @@ public class MirrorMakerConfig extends AbstractConfig {
         return transformed;
     }
 
-    protected static ConfigDef config() {
+    private static ConfigDef config() {
         ConfigDef result = new ConfigDef()
-                .define(CLUSTERS_CONFIG, Type.LIST, Importance.HIGH, CLUSTERS_DOC)
+                .define(CLUSTERS_CONFIG, Type.LIST, ConfigDef.NO_DEFAULT_VALUE, ConfigDef.ValidList.anyNonDuplicateValues(true, false), Importance.HIGH, CLUSTERS_DOC)
                 .define(ENABLE_INTERNAL_REST_CONFIG, Type.BOOLEAN, false, Importance.HIGH, ENABLE_INTERNAL_REST_DOC)
-                .define(CONFIG_PROVIDERS_CONFIG, Type.LIST, Collections.emptyList(), Importance.LOW, CONFIG_PROVIDERS_DOC)
+                .define(CONFIG_PROVIDERS_CONFIG, Type.LIST, List.of(), ConfigDef.ValidList.anyNonDuplicateValues(true, false), Importance.LOW, CONFIG_PROVIDERS_DOC)
                 // security support
                 .define(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG,
                         Type.STRING,
@@ -308,7 +300,7 @@ public class MirrorMakerConfig extends AbstractConfig {
     }
 
     private Map<String, String> stringsWithPrefix(String prefix) {
-        return Utils.entriesWithPrefix(rawProperties, prefix, false);
+        return Utils.entriesWithPrefix(rawProperties, prefix, false, true);
     }
 
     static Map<String, String> clusterConfigsWithPrefix(String prefix, Map<String, String> props) {

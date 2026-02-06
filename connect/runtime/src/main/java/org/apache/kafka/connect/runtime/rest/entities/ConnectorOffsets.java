@@ -16,10 +16,13 @@
  */
 package org.apache.kafka.connect.runtime.rest.entities;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
+import org.apache.kafka.connect.runtime.rest.resources.ConnectorsResource;
+
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -43,34 +46,23 @@ import java.util.Objects;
  *       ]
  *     }
  * </pre>
+ *
+ * @see ConnectorsResource#getOffsets
+ * @see ConnectorsResource#alterConnectorOffsets
  */
-public class ConnectorOffsets {
-    private final List<ConnectorOffset> offsets;
-
-    @JsonCreator
-    public ConnectorOffsets(@JsonProperty("offsets") List<ConnectorOffset> offsets) {
-        this.offsets = offsets;
-    }
-
-    @JsonProperty
-    public List<ConnectorOffset> offsets() {
-        return offsets;
+public record ConnectorOffsets(
+    @JsonProperty("offsets") List<ConnectorOffset> offsets
+) {
+    public Map<Map<String, ?>, Map<String, ?>> toMap() {
+        Map<Map<String, ?>, Map<String, ?>> partitionOffsetMap = new HashMap<>();
+        for (ConnectorOffset offset : offsets) {
+            partitionOffsetMap.put(offset.partition(), offset.offset());
+        }
+        return partitionOffsetMap;
     }
 
     @Override
-    public boolean equals(Object obj) {
-        if (this == obj) {
-            return true;
-        }
-        if (!(obj instanceof ConnectorOffsets)) {
-            return false;
-        }
-        ConnectorOffsets that = (ConnectorOffsets) obj;
-        return Objects.equals(this.offsets, that.offsets);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hashCode(offsets);
+    public String toString() {
+        return Objects.toString(offsets);
     }
 }

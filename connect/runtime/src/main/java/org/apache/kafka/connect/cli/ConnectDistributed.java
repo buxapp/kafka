@@ -20,7 +20,6 @@ import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.connect.connector.policy.ConnectorClientConfigOverridePolicy;
 import org.apache.kafka.connect.json.JsonConverter;
 import org.apache.kafka.connect.json.JsonConverterConfig;
-import org.apache.kafka.connect.runtime.Herder;
 import org.apache.kafka.connect.runtime.Worker;
 import org.apache.kafka.connect.runtime.WorkerConfigTransformer;
 import org.apache.kafka.connect.runtime.distributed.DistributedConfig;
@@ -36,11 +35,9 @@ import org.apache.kafka.connect.storage.KafkaStatusBackingStore;
 import org.apache.kafka.connect.storage.StatusBackingStore;
 import org.apache.kafka.connect.util.ConnectUtils;
 import org.apache.kafka.connect.util.SharedTopicAdmin;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.apache.kafka.clients.CommonClientConfigs.CLIENT_ID_CONFIG;
@@ -54,8 +51,7 @@ import static org.apache.kafka.clients.CommonClientConfigs.CLIENT_ID_CONFIG;
  * stopping worker instances.
  * </p>
  */
-public class ConnectDistributed extends AbstractConnectCli<DistributedConfig> {
-    private static final Logger log = LoggerFactory.getLogger(ConnectDistributed.class);
+public class ConnectDistributed extends AbstractConnectCli<DistributedHerder, DistributedConfig> {
 
     public ConnectDistributed(String... args) {
         super(args);
@@ -67,7 +63,7 @@ public class ConnectDistributed extends AbstractConnectCli<DistributedConfig> {
     }
 
     @Override
-    protected Herder createHerder(DistributedConfig config, String workerId, Plugins plugins,
+    protected DistributedHerder createHerder(DistributedConfig config, String workerId, Plugins plugins,
                                   ConnectorClientConfigOverridePolicy connectorClientConfigOverridePolicy,
                                   RestServer restServer, RestClient restClient) {
 
@@ -81,7 +77,7 @@ public class ConnectDistributed extends AbstractConnectCli<DistributedConfig> {
 
         KafkaOffsetBackingStore offsetBackingStore = new KafkaOffsetBackingStore(sharedAdmin, () -> clientIdBase,
                 plugins.newInternalConverter(true, JsonConverter.class.getName(),
-                        Collections.singletonMap(JsonConverterConfig.SCHEMAS_ENABLE_CONFIG, "false")));
+                        Map.of(JsonConverterConfig.SCHEMAS_ENABLE_CONFIG, "false")));
         offsetBackingStore.configure(config);
 
         Worker worker = new Worker(workerId, Time.SYSTEM, plugins, config, offsetBackingStore, connectorClientConfigOverridePolicy);
@@ -103,7 +99,7 @@ public class ConnectDistributed extends AbstractConnectCli<DistributedConfig> {
         return new DistributedHerder(config, Time.SYSTEM, worker,
                 kafkaClusterId, statusBackingStore, configBackingStore,
                 restServer.advertisedUrl().toString(), restClient, connectorClientConfigOverridePolicy,
-                Collections.emptyList(), sharedAdmin);
+                List.of(), sharedAdmin);
     }
 
     @Override

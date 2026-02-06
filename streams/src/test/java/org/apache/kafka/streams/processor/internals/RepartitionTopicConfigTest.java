@@ -16,13 +16,13 @@
  */
 package org.apache.kafka.streams.processor.internals;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 import java.util.Optional;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class RepartitionTopicConfigTest {
 
@@ -53,6 +53,6 @@ public class RepartitionTopicConfigTest {
 
         repartitionTopicConfig.setNumberOfPartitions(4);
 
-        assertEquals(repartitionTopicConfig.numberOfPartitions(), Optional.of(4));
+        assertEquals(Optional.of(4), repartitionTopicConfig.numberOfPartitions());
     }
 }

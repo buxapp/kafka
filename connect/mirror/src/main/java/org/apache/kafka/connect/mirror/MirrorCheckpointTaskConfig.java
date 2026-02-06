@@ -18,11 +18,9 @@ package org.apache.kafka.connect.mirror;
 
 import org.apache.kafka.common.config.ConfigDef;
 
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
-import java.util.List;
-import java.util.HashSet;
-import java.util.Collections;
 
 public class MirrorCheckpointTaskConfig extends MirrorCheckpointConfig {
 
@@ -33,11 +31,7 @@ public class MirrorCheckpointTaskConfig extends MirrorCheckpointConfig {
     }
 
     Set<String> taskConsumerGroups() {
-        List<String> fields = getList(TASK_CONSUMER_GROUPS);
-        if (fields == null || fields.isEmpty()) {
-            return Collections.emptySet();
-        }
-        return new HashSet<>(fields);
+        return new HashSet<>(getList(TASK_CONSUMER_GROUPS));
     }
 
     MirrorCheckpointMetrics metrics() {
@@ -55,7 +49,8 @@ public class MirrorCheckpointTaskConfig extends MirrorCheckpointConfig {
             .define(
                     TASK_CONSUMER_GROUPS,
                     ConfigDef.Type.LIST,
-                    null,
+                    ConfigDef.NO_DEFAULT_VALUE,
+                    ConfigDef.ValidList.anyNonDuplicateValues(false, false),
                     ConfigDef.Importance.LOW,
                     TASK_CONSUMER_GROUPS_DOC)
             .define(TASK_INDEX,
@@ -64,4 +59,3 @@ public class MirrorCheckpointTaskConfig extends MirrorCheckpointConfig {
                     ConfigDef.Importance.LOW,
                     "The index of the task");
 }
-

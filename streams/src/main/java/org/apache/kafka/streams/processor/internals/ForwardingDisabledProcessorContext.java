@@ -31,6 +31,7 @@ import org.apache.kafka.streams.processor.To;
 
 import java.io.File;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
 
@@ -42,8 +43,7 @@ public final class ForwardingDisabledProcessorContext implements ProcessorContex
 
     private static final String EXPLANATION = "ProcessorContext#forward() is not supported from this context, "
         + "as the framework must ensure the key is not changed (#forward allows changing the key on "
-        + "messages which are sent). Try another function, which doesn't allow the key to be changed "
-        + "(for example - #tranformValues).";
+        + "messages which are sent). Use KStream.process() if you need to change the key.";
 
     public ForwardingDisabledProcessorContext(final ProcessorContext delegate) {
         this.delegate = Objects.requireNonNull(delegate, "delegate");
@@ -95,6 +95,14 @@ public final class ForwardingDisabledProcessorContext implements ProcessorContex
                                 final PunctuationType type,
                                 final Punctuator callback) throws IllegalArgumentException {
         return delegate.schedule(interval, type, callback);
+    }
+
+    @Override
+    public Cancellable schedule(final Instant startTime,
+                                final Duration interval,
+                                final PunctuationType type,
+                                final Punctuator callback) {
+        return delegate.schedule(startTime, interval, type, callback);
     }
 
     @Override

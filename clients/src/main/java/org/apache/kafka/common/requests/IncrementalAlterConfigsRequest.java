@@ -24,9 +24,8 @@ import org.apache.kafka.common.message.IncrementalAlterConfigsRequestData.AlterC
 import org.apache.kafka.common.message.IncrementalAlterConfigsResponseData;
 import org.apache.kafka.common.message.IncrementalAlterConfigsResponseData.AlterConfigsResourceResponse;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.ByteBufferAccessor;
+import org.apache.kafka.common.protocol.Readable;
 
-import java.nio.ByteBuffer;
 import java.util.Collection;
 import java.util.Map;
 
@@ -73,22 +72,20 @@ public class IncrementalAlterConfigsRequest extends AbstractRequest {
 
         @Override
         public String toString() {
-            return data.toString();
+            return maskData(data);
         }
     }
 
     private final IncrementalAlterConfigsRequestData data;
-    private final short version;
 
     public IncrementalAlterConfigsRequest(IncrementalAlterConfigsRequestData data, short version) {
         super(ApiKeys.INCREMENTAL_ALTER_CONFIGS, version);
         this.data = data;
-        this.version = version;
     }
 
-    public static IncrementalAlterConfigsRequest parse(ByteBuffer buffer, short version) {
+    public static IncrementalAlterConfigsRequest parse(Readable readable, short version) {
         return new IncrementalAlterConfigsRequest(new IncrementalAlterConfigsRequestData(
-            new ByteBufferAccessor(buffer), version), version);
+            readable, version), version);
     }
 
     @Override
@@ -108,5 +105,21 @@ public class IncrementalAlterConfigsRequest extends AbstractRequest {
                     .setErrorMessage(apiError.message()));
         }
         return new IncrementalAlterConfigsResponse(response);
+    }
+
+    // It is not safe to print all config values
+    private static String maskData(IncrementalAlterConfigsRequestData data) {
+        IncrementalAlterConfigsRequestData tempData = data.duplicate();
+        tempData.resources().forEach(resource -> {
+            resource.configs().forEach(config -> {
+                config.setValue("REDACTED");
+            });
+        });
+        return tempData.toString();
+    }
+
+    @Override
+    public String toString() {
+        return maskData(data);
     }
 }

@@ -18,26 +18,23 @@
 package org.apache.kafka.image;
 
 import org.apache.kafka.common.Uuid;
+import org.apache.kafka.image.node.AclsImageNode;
 import org.apache.kafka.image.writer.ImageWriter;
-import org.apache.kafka.image.writer.ImageWriterOptions;
 import org.apache.kafka.metadata.authorizer.StandardAcl;
 import org.apache.kafka.metadata.authorizer.StandardAclWithId;
 
 import java.util.Collections;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.stream.Collectors;
 
 
 /**
  * Represents the ACLs in the metadata image.
- *
+ * <p>
  * This class is thread-safe.
  */
-public final class AclsImage {
-    public static final AclsImage EMPTY = new AclsImage(Collections.emptyMap());
-
-    private final Map<Uuid, StandardAcl> acls;
+public record AclsImage(Map<Uuid, StandardAcl> acls) {
+    public static final AclsImage EMPTY = new AclsImage(Map.of());
 
     public AclsImage(Map<Uuid, StandardAcl> acls) {
         this.acls = Collections.unmodifiableMap(acls);
@@ -47,15 +44,7 @@ public final class AclsImage {
         return acls.isEmpty();
     }
 
-    public Map<Uuid, StandardAcl> acls() {
-        return acls;
-    }
-
-    public void write(ImageWriter writer, ImageWriterOptions options) {
-        // Technically, AccessControlEntryRecord appeared in 3.2-IV0, so we should not write it if
-        // the output version is less than that. However, there is a problem: pre-production KRaft
-        // images didn't support FeatureLevelRecord, so we can't distinguish 3.2-IV0 from 3.0-IV1.
-        // The least bad way to resolve this is just to pretend that ACLs were in 3.0-IV1.
+    public void write(ImageWriter writer) {
         for (Entry<Uuid, StandardAcl> entry : acls.entrySet()) {
             StandardAclWithId aclWithId = new StandardAclWithId(entry.getKey(), entry.getValue());
             writer.write(0, aclWithId.toRecord());
@@ -63,21 +52,7 @@ public final class AclsImage {
     }
 
     @Override
-    public int hashCode() {
-        return acls.hashCode();
-    }
-
-    @Override
-    public boolean equals(Object o) {
-        if (!(o instanceof AclsImage)) return false;
-        AclsImage other = (AclsImage) o;
-        return acls.equals(other.acls);
-    }
-
-    @Override
     public String toString() {
-        return "AclsImage(" + acls.values().stream().
-            map(a -> a.toString()).
-            collect(Collectors.joining(", ")) + ")";
+        return new AclsImageNode(this).stringify();
     }
 }

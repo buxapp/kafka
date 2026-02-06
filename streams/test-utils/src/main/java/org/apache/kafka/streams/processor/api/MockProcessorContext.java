@@ -25,8 +25,6 @@ import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.StreamsMetrics;
 import org.apache.kafka.streams.Topology;
 import org.apache.kafka.streams.TopologyTestDriver;
-import org.apache.kafka.streams.kstream.Transformer;
-import org.apache.kafka.streams.kstream.ValueTransformer;
 import org.apache.kafka.streams.processor.Cancellable;
 import org.apache.kafka.streams.processor.CommitCallback;
 import org.apache.kafka.streams.processor.PunctuationType;
@@ -43,6 +41,7 @@ import org.apache.kafka.streams.state.internals.InMemoryKeyValueStore;
 
 import java.io.File;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -56,8 +55,8 @@ import static org.apache.kafka.common.utils.Utils.mkMap;
 import static org.apache.kafka.common.utils.Utils.mkProperties;
 
 /**
- * {@link MockProcessorContext} is a mock of {@link ProcessorContext} for users to test their {@link Processor},
- * {@link Transformer}, and {@link ValueTransformer} implementations.
+ * {@link MockProcessorContext} is a mock of {@link ProcessorContext} for users to test their {@link Processor}
+ * implementations.
  * <p>
  * The tests for this class (org.apache.kafka.streams.MockProcessorContextTest) include several behavioral
  * tests that serve as example usage.
@@ -116,15 +115,28 @@ public class MockProcessorContext<KForward, VForward> implements ProcessorContex
      * {@link CapturedPunctuator} holds captured punctuators, along with their scheduling information.
      */
     public static final class CapturedPunctuator {
+        private final Instant startTime;
         private final Duration interval;
         private final PunctuationType type;
         private final Punctuator punctuator;
         private boolean cancelled = false;
 
         private CapturedPunctuator(final Duration interval, final PunctuationType type, final Punctuator punctuator) {
+            this.startTime = null;  // unanchored punctuator so start time is undefined
             this.interval = interval;
             this.type = type;
             this.punctuator = punctuator;
+        }
+
+        private CapturedPunctuator(final Instant startTime, final Duration interval, final PunctuationType type, final Punctuator punctuator) {
+            this.startTime = startTime;
+            this.interval = interval;
+            this.type = type;
+            this.punctuator = punctuator;
+        }
+
+        public Instant getStartTime() {
+            return startTime;
         }
 
         public Duration getInterval() {
@@ -216,7 +228,7 @@ public class MockProcessorContext<KForward, VForward> implements ProcessorContex
         this(
             mkProperties(mkMap(
                 mkEntry(StreamsConfig.APPLICATION_ID_CONFIG, ""),
-                mkEntry(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "")
+                mkEntry(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "dummy-bootstrap-host:0")
             )),
             new TaskId(0, 0),
             null
@@ -257,7 +269,6 @@ public class MockProcessorContext<KForward, VForward> implements ProcessorContex
         metrics = new StreamsMetricsImpl(
             new Metrics(metricConfig),
             threadId,
-            streamsConfig.getString(StreamsConfig.BUILT_IN_METRICS_VERSION_CONFIG),
             Time.SYSTEM
         );
         TaskMetrics.droppedRecordsSensor(threadId, taskId.toString(), metrics);
@@ -374,9 +385,16 @@ public class MockProcessorContext<KForward, VForward> implements ProcessorContex
                                 final PunctuationType type,
                                 final Punctuator callback) {
         final CapturedPunctuator capturedPunctuator = new CapturedPunctuator(interval, type, callback);
-
         punctuators.add(capturedPunctuator);
+        return capturedPunctuator::cancel;    }
 
+    @Override
+    public Cancellable schedule(final Instant startTime,
+                                final Duration interval,
+                                final PunctuationType type,
+                                final Punctuator callback) {
+        final CapturedPunctuator capturedPunctuator = new CapturedPunctuator(startTime, interval, type, callback);
+        punctuators.add(capturedPunctuator);
         return capturedPunctuator::cancel;
     }
 
@@ -421,7 +439,7 @@ public class MockProcessorContext<KForward, VForward> implements ProcessorContex
     public List<CapturedForward<? extends KForward, ? extends VForward>> forwarded(final String childName) {
         final LinkedList<CapturedForward<? extends KForward, ? extends VForward>> result = new LinkedList<>();
         for (final CapturedForward<? extends KForward, ? extends VForward> capture : capturedForwards) {
-            if (!capture.childName().isPresent() || capture.childName().equals(Optional.of(childName))) {
+            if (capture.childName().isEmpty() || capture.childName().equals(Optional.of(childName))) {
                 result.add(capture);
             }
         }

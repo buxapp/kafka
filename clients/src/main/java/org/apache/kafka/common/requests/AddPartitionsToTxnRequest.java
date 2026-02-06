@@ -19,9 +19,9 @@ package org.apache.kafka.common.requests;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.message.AddPartitionsToTxnRequestData;
 import org.apache.kafka.common.message.AddPartitionsToTxnRequestData.AddPartitionsToTxnTopic;
+import org.apache.kafka.common.message.AddPartitionsToTxnRequestData.AddPartitionsToTxnTopicCollection;
 import org.apache.kafka.common.message.AddPartitionsToTxnRequestData.AddPartitionsToTxnTransaction;
 import org.apache.kafka.common.message.AddPartitionsToTxnRequestData.AddPartitionsToTxnTransactionCollection;
-import org.apache.kafka.common.message.AddPartitionsToTxnRequestData.AddPartitionsToTxnTopicCollection;
 import org.apache.kafka.common.message.AddPartitionsToTxnResponseData;
 import org.apache.kafka.common.message.AddPartitionsToTxnResponseData.AddPartitionsToTxnPartitionResult;
 import org.apache.kafka.common.message.AddPartitionsToTxnResponseData.AddPartitionsToTxnPartitionResultCollection;
@@ -29,16 +29,19 @@ import org.apache.kafka.common.message.AddPartitionsToTxnResponseData.AddPartiti
 import org.apache.kafka.common.message.AddPartitionsToTxnResponseData.AddPartitionsToTxnTopicResult;
 import org.apache.kafka.common.message.AddPartitionsToTxnResponseData.AddPartitionsToTxnTopicResultCollection;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.ByteBufferAccessor;
 import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.protocol.Readable;
 
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 public class AddPartitionsToTxnRequest extends AbstractRequest {
+
+    private static final short LAST_CLIENT_VERSION = (short) 3;
+    // Note: earliest broker version is also the first version to support verification requests.
+    private static final short EARLIEST_BROKER_VERSION = (short) 4;
 
     private final AddPartitionsToTxnRequestData data;
 
@@ -52,7 +55,7 @@ public class AddPartitionsToTxnRequest extends AbstractRequest {
 
             AddPartitionsToTxnTopicCollection topics = buildTxnTopicCollection(partitions);
             
-            return new Builder(ApiKeys.ADD_PARTITIONS_TO_TXN.oldestVersion(), (short) 3,
+            return new Builder(ApiKeys.ADD_PARTITIONS_TO_TXN.oldestVersion(), LAST_CLIENT_VERSION,
                 new AddPartitionsToTxnRequestData()
                     .setV3AndBelowTransactionalId(transactionalId)
                     .setV3AndBelowProducerId(producerId)
@@ -61,7 +64,7 @@ public class AddPartitionsToTxnRequest extends AbstractRequest {
         }
         
         public static Builder forBroker(AddPartitionsToTxnTransactionCollection transactions) {
-            return new Builder((short) 4, ApiKeys.ADD_PARTITIONS_TO_TXN.latestVersion(),
+            return new Builder(EARLIEST_BROKER_VERSION, ApiKeys.ADD_PARTITIONS_TO_TXN.latestVersion(),
                 new AddPartitionsToTxnRequestData()
                     .setTransactions(transactions));
         }
@@ -120,7 +123,7 @@ public class AddPartitionsToTxnRequest extends AbstractRequest {
     public AddPartitionsToTxnResponse getErrorResponse(int throttleTimeMs, Throwable e) {
         Errors error = Errors.forException(e);
         AddPartitionsToTxnResponseData response = new AddPartitionsToTxnResponseData();
-        if (version() < 4) {
+        if (version() < EARLIEST_BROKER_VERSION) {
             response.setResultsByTopicV3AndBelow(errorResponseForTopics(data.v3AndBelowTopics(), error));
         } else {
             response.setErrorCode(error.code());
@@ -149,9 +152,16 @@ public class AddPartitionsToTxnRequest extends AbstractRequest {
         return partitionsByTransaction;
     }
 
-    // Takes a version 3 or below request and returns a v4+ singleton (one transaction ID) request.
+    // Takes a version 3 or below request (client request) and returns a v4+ singleton (one transaction ID) request.
     public AddPartitionsToTxnRequest normalizeRequest() {
         return new AddPartitionsToTxnRequest(new AddPartitionsToTxnRequestData().setTransactions(singletonTransaction()), version());
+    }
+
+    // This method returns true if all the transactions in it are verify only. One reason to distinguish is to separate
+    // requests that will need to write to log in the non error case (adding partitions) from ones that will not (verify only).
+    public boolean allVerifyOnlyRequest() {
+        return version() > LAST_CLIENT_VERSION &&
+            data.transactions().stream().allMatch(AddPartitionsToTxnTransaction::verifyOnly);
     }
 
     private AddPartitionsToTxnTransactionCollection singletonTransaction() {
@@ -187,7 +197,7 @@ public class AddPartitionsToTxnRequest extends AbstractRequest {
         return topicResults;
     }
 
-    public static AddPartitionsToTxnRequest parse(ByteBuffer buffer, short version) {
-        return new AddPartitionsToTxnRequest(new AddPartitionsToTxnRequestData(new ByteBufferAccessor(buffer), version), version);
+    public static AddPartitionsToTxnRequest parse(Readable readable, short version) {
+        return new AddPartitionsToTxnRequest(new AddPartitionsToTxnRequestData(readable, version), version);
     }
 }

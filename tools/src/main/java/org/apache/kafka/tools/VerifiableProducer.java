@@ -16,6 +16,15 @@
  */
 package org.apache.kafka.tools;
 
+import org.apache.kafka.clients.producer.Callback;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.Producer;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.common.serialization.StringSerializer;
+import org.apache.kafka.server.util.ThroughputThrottler;
+
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -26,14 +35,6 @@ import net.sourceforge.argparse4j.inf.ArgumentParser;
 import net.sourceforge.argparse4j.inf.ArgumentParserException;
 import net.sourceforge.argparse4j.inf.MutuallyExclusiveGroup;
 import net.sourceforge.argparse4j.inf.Namespace;
-
-import org.apache.kafka.clients.producer.Callback;
-import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.Producer;
-import org.apache.kafka.clients.producer.ProducerConfig;
-import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.clients.producer.RecordMetadata;
-import org.apache.kafka.common.serialization.StringSerializer;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -109,76 +110,69 @@ public class VerifiableProducer implements AutoCloseable {
     /** Get the command-line argument parser. */
     private static ArgumentParser argParser() {
         ArgumentParser parser = ArgumentParsers
-                .newArgumentParser("verifiable-producer")
-                .defaultHelp(true)
-                .description("This tool produces increasing integers to the specified topic and prints JSON metadata to stdout on each \"send\" request, making externally visible which messages have been acked and which have not.");
+            .newArgumentParser("verifiable-producer")
+            .defaultHelp(true)
+            .description("This tool produces increasing integers to the specified topic and prints JSON metadata to stdout on each \"send\" request, making externally visible which messages have been acked and which have not.");
 
         parser.addArgument("--topic")
-                .action(store())
-                .required(true)
-                .type(String.class)
-                .metavar("TOPIC")
-                .help("Produce messages to this topic.");
+            .action(store())
+            .required(true)
+            .type(String.class)
+            .metavar("TOPIC")
+            .help("Produce messages to this topic.");
         MutuallyExclusiveGroup connectionGroup = parser.addMutuallyExclusiveGroup("Connection Group")
-                .description("Group of arguments for connection to brokers")
-                .required(true);
+            .description("Group of arguments for connection to brokers")
+            .required(true);
         connectionGroup.addArgument("--bootstrap-server")
-                .action(store())
-                .required(false)
-                .type(String.class)
-                .metavar("HOST1:PORT1[,HOST2:PORT2[...]]")
-                .dest("bootstrapServer")
-                .help("REQUIRED: The server(s) to connect to. Comma-separated list of Kafka brokers in the form HOST1:PORT1,HOST2:PORT2,...");
-
-        connectionGroup.addArgument("--broker-list")
-                .action(store())
-                .required(false)
-                .type(String.class)
-                .metavar("HOST1:PORT1[,HOST2:PORT2[...]]")
-                .dest("brokerList")
-                .help("DEPRECATED, use --bootstrap-server instead; ignored if --bootstrap-server is specified.  Comma-separated list of Kafka brokers in the form HOST1:PORT1,HOST2:PORT2,...");
+            .action(store())
+            .required(false)
+            .type(String.class)
+            .dest("bootstrapServer")
+            .metavar("HOST1:PORT1[,HOST2:PORT2[...]]")
+            .help("REQUIRED: The server(s) to connect to. Comma-separated list of Kafka brokers in the form HOST1:PORT1,HOST2:PORT2,...");
 
         parser.addArgument("--max-messages")
-                .action(store())
-                .required(false)
-                .setDefault(-1)
-                .type(Integer.class)
-                .metavar("MAX-MESSAGES")
-                .dest("maxMessages")
-                .help("Produce this many messages. If -1, produce messages until the process is killed externally.");
+            .action(store())
+            .required(false)
+            .setDefault(-1)
+            .type(Integer.class)
+            .dest("maxMessages")
+            .metavar("MAX-MESSAGES")
+            .help("Produce this many messages. If -1, produce messages until the process is killed externally.");
 
         parser.addArgument("--throughput")
-                .action(store())
-                .required(false)
-                .setDefault(-1)
-                .type(Integer.class)
-                .metavar("THROUGHPUT")
-                .help("If set >= 0, throttle maximum message throughput to *approximately* THROUGHPUT messages/sec.");
+            .action(store())
+            .required(false)
+            .setDefault(-1)
+            .type(Integer.class)
+            .metavar("THROUGHPUT")
+            .help("If set >= 0, throttle maximum message throughput to *approximately* THROUGHPUT messages/sec.");
 
         parser.addArgument("--acks")
-                .action(store())
-                .required(false)
-                .setDefault(-1)
-                .type(Integer.class)
-                .choices(0, 1, -1)
-                .metavar("ACKS")
-                .help("Acks required on each produced message. See Kafka docs on acks for details.");
+            .action(store())
+            .required(false)
+            .setDefault(-1)
+            .type(Integer.class)
+            .choices(0, 1, -1)
+            .metavar("ACKS")
+            .help("Acks required on each produced message. See Kafka docs on acks for details.");
 
         parser.addArgument("--producer.config")
-                .action(store())
-                .required(false)
-                .type(String.class)
-                .metavar("CONFIG_FILE")
-                .help("Producer config properties file.");
+            .action(store())
+            .required(false)
+            .type(String.class)
+            .metavar("CONFIG-FILE")
+            .help("(DEPRECATED) Producer config properties file. " +
+                    "This option will be removed in a future version. Use --command-config instead.");
 
         parser.addArgument("--message-create-time")
-                .action(store())
-                .required(false)
-                .setDefault(-1L)
-                .type(Long.class)
-                .metavar("CREATETIME")
-                .dest("createTime")
-                .help("Send messages with creation time starting at the arguments value, in milliseconds since epoch");
+            .action(store())
+            .required(false)
+            .setDefault(-1L)
+            .type(Long.class)
+            .metavar("CREATE-TIME")
+            .dest("createTime")
+            .help("Send messages with creation time starting at the arguments value, in milliseconds since epoch");
 
         parser.addArgument("--value-prefix")
             .action(store())
@@ -195,6 +189,14 @@ public class VerifiableProducer implements AutoCloseable {
             .metavar("REPEATING-KEYS")
             .dest("repeatingKeys")
             .help("If specified, each produced record will have a key starting at 0 increment by 1 up to the number specified (exclusive), then the key is set to 0 again");
+
+        parser.addArgument("--command-config")
+            .action(store())
+            .required(false)
+            .type(String.class)
+            .metavar("CONFIG-FILE")
+            .dest("commandConfigFile")
+            .help("Config properties file (config options shared with command line parameters will be overridden).");
 
         return parser;
     }
@@ -224,6 +226,7 @@ public class VerifiableProducer implements AutoCloseable {
         String topic = res.getString("topic");
         int throughput = res.getInt("throughput");
         String configFile = res.getString("producer.config");
+        String commandConfigFile = res.getString("commandConfigFile");
         Integer valuePrefix = res.getInt("valuePrefix");
         Long createTime = res.getLong("createTime");
         Integer repeatingKeys = res.getInt("repeatingKeys");
@@ -233,15 +236,12 @@ public class VerifiableProducer implements AutoCloseable {
 
         Properties producerProps = new Properties();
 
-        if (res.get("bootstrapServer") != null) {
-            producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, res.getString("bootstrapServer"));
-        } else if (res.getString("brokerList") != null) {
-            producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, res.getString("brokerList"));
-        } else {
+        if (res.get("bootstrapServer") == null) {
             parser.printHelp();
             // Can't use `Exit.exit` here because it didn't exist until 0.11.0.0.
             System.exit(0);
         }
+        producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, res.getString("bootstrapServer"));
 
         producerProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
                 "org.apache.kafka.common.serialization.StringSerializer");
@@ -250,14 +250,25 @@ public class VerifiableProducer implements AutoCloseable {
         producerProps.put(ProducerConfig.ACKS_CONFIG, Integer.toString(res.getInt("acks")));
         // No producer retries
         producerProps.put(ProducerConfig.RETRIES_CONFIG, "0");
+        if (configFile != null && commandConfigFile != null) {
+            throw new ArgumentParserException("Options --producer.config and --command-config are mutually exclusive.", parser);
+        }
+
         if (configFile != null) {
+            System.out.println("Option --producer.config has been deprecated and will be removed in a future version. Use --command-config instead.");
             try {
                 producerProps.putAll(loadProps(configFile));
             } catch (IOException e) {
                 throw new ArgumentParserException(e.getMessage(), parser);
             }
         }
-
+        if (commandConfigFile != null) {
+            try {
+                producerProps.putAll(loadProps(commandConfigFile));
+            } catch (IOException e) {
+                throw new ArgumentParserException(e.getMessage(), parser);
+            }
+        }
         StringSerializer serializer = new StringSerializer();
         KafkaProducer<String, String> producer = new KafkaProducer<>(producerProps, serializer, serializer);
 
@@ -289,7 +300,7 @@ public class VerifiableProducer implements AutoCloseable {
         }
     }
 
-    /** Returns a string to publish: ether 'valuePrefix'.'val' or 'val' **/
+    /** Returns a string to publish: ether 'valuePrefix'.'val' or 'val' */
     public String getValue(long val) {
         if (this.valuePrefix != null) {
             return String.format("%d.%d", this.valuePrefix, val);
@@ -315,7 +326,7 @@ public class VerifiableProducer implements AutoCloseable {
     }
 
     @JsonPropertyOrder({ "timestamp", "name" })
-    private static abstract class ProducerEvent {
+    private abstract static class ProducerEvent {
         private final long timestamp = System.currentTimeMillis();
 
         @JsonProperty
@@ -345,9 +356,9 @@ public class VerifiableProducer implements AutoCloseable {
 
     private static class SuccessfulSend extends ProducerEvent {
 
-        private String key;
-        private String value;
-        private RecordMetadata recordMetadata;
+        private final String key;
+        private final String value;
+        private final RecordMetadata recordMetadata;
 
         public SuccessfulSend(String key, String value, RecordMetadata recordMetadata) {
             assert recordMetadata != null : "Expected non-null recordMetadata object.";
@@ -389,10 +400,10 @@ public class VerifiableProducer implements AutoCloseable {
 
     private static class FailedSend extends ProducerEvent {
 
-        private String topic;
-        private String key;
-        private String value;
-        private Exception exception;
+        private final String topic;
+        private final String key;
+        private final String value;
+        private final Exception exception;
 
         public FailedSend(String key, String value, String topic, Exception exception) {
             assert exception != null : "Expected non-null exception.";
@@ -435,10 +446,10 @@ public class VerifiableProducer implements AutoCloseable {
 
     private static class ToolData extends ProducerEvent {
 
-        private long sent;
-        private long acked;
-        private long targetThroughput;
-        private double avgThroughput;
+        private final long sent;
+        private final long acked;
+        private final long targetThroughput;
+        private final double avgThroughput;
 
         public ToolData(long sent, long acked, long targetThroughput, double avgThroughput) {
             this.sent = sent;
@@ -484,8 +495,8 @@ public class VerifiableProducer implements AutoCloseable {
     /** Callback which prints errors to stdout when the producer fails to send. */
     private class PrintInfoCallback implements Callback {
 
-        private String key;
-        private String value;
+        private final String key;
+        private final String value;
 
         PrintInfoCallback(String key, String value) {
             this.key = key;

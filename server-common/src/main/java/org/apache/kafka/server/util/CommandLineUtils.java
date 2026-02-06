@@ -16,18 +16,23 @@
  */
 package org.apache.kafka.server.util;
 
-import joptsimple.OptionParser;
-import joptsimple.OptionSet;
-import joptsimple.OptionSpec;
+import org.apache.kafka.clients.CommonClientConfigs;
+import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.common.utils.AppInfoParser;
 import org.apache.kafka.common.utils.Exit;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
+import java.util.stream.Collectors;
+
+import joptsimple.OptionParser;
+import joptsimple.OptionSet;
+import joptsimple.OptionSpec;
 
 /**
  * Helper functions for dealing with command line utilities.
@@ -127,6 +132,34 @@ public class CommandLineUtils {
         }
     }
 
+    public static void printErrorAndExit(String message) {
+        System.err.println(message);
+        Exit.exit(1, message);
+    }
+
+    /**
+     * Check that exactly one of a set of mutually exclusive arguments is present.
+     */
+    public static void checkOneOfArgs(OptionParser parser, OptionSet options, OptionSpec<?>... optionSpecs) {
+        if (optionSpecs == null || optionSpecs.length == 0) {
+            throw new IllegalArgumentException("At least one option must be provided");
+        }
+
+        int presentCount = 0;
+        for (OptionSpec<?> spec : optionSpecs) {
+            if (options.has(spec)) {
+                presentCount++;
+            }
+        }
+
+        if (presentCount != 1) {
+            printUsageAndExit(parser, "Exactly one of the following arguments is required: " +
+                    Arrays.stream(optionSpecs)
+                            .map(Object::toString)
+                            .collect(Collectors.joining(", ")));
+        }
+    }
+
     public static void printUsageAndExit(OptionParser parser, String message) {
         System.err.println(message);
         try {
@@ -192,6 +225,55 @@ public class CommandLineUtils {
             } else {
                 props.put(key, value.toString());
             }
+        }
+    }
+
+    static class InitializeBootstrapException extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        InitializeBootstrapException(String message) {
+            super(message);
+        }
+    }
+
+    public static void initializeBootstrapProperties(
+        Properties properties,
+        Optional<String> bootstrapServer,
+        Optional<String> bootstrapControllers
+    ) {
+        if (bootstrapServer.isPresent()) {
+            if (bootstrapControllers.isPresent()) {
+                throw new InitializeBootstrapException("You cannot specify both " +
+                        "--bootstrap-controller and --bootstrap-server.");
+            }
+            properties.setProperty(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG,
+                    bootstrapServer.get());
+            properties.remove(AdminClientConfig.BOOTSTRAP_CONTROLLERS_CONFIG);
+        } else if (bootstrapControllers.isPresent()) {
+            properties.remove(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG);
+            properties.setProperty(AdminClientConfig.BOOTSTRAP_CONTROLLERS_CONFIG,
+                    bootstrapControllers.get());
+        } else {
+            throw new InitializeBootstrapException("You must specify either --bootstrap-controller " +
+                    "or --bootstrap-server.");
+        }
+    }
+
+    public static void initializeBootstrapProperties(
+        OptionParser parser,
+        OptionSet options,
+        Properties properties,
+        OptionSpec<String> bootstrapServer,
+        OptionSpec<String> bootstrapControllers
+    ) {
+        try {
+            initializeBootstrapProperties(properties,
+                options.has(bootstrapServer) ?
+                    Optional.of(options.valueOf(bootstrapServer)) : Optional.empty(),
+                options.has(bootstrapControllers) ?
+                        Optional.of(options.valueOf(bootstrapControllers)) : Optional.empty());
+        } catch (InitializeBootstrapException e) {
+            printUsageAndExit(parser, e.getMessage());
         }
     }
 }

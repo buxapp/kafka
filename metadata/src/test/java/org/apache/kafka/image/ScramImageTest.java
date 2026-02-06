@@ -22,10 +22,12 @@ import org.apache.kafka.common.metadata.RemoveUserScramCredentialRecord;
 import org.apache.kafka.common.metadata.UserScramCredentialRecord;
 import org.apache.kafka.image.writer.ImageWriterOptions;
 import org.apache.kafka.image.writer.RecordListWriter;
+import org.apache.kafka.metadata.RecordTestUtils;
+import org.apache.kafka.metadata.ScramCredentialData;
+import org.apache.kafka.server.common.ApiMessageAndVersion;
 import org.apache.kafka.server.common.MetadataVersion;
 import org.apache.kafka.server.util.MockRandom;
-import org.apache.kafka.metadata.RecordTestUtils;
-import org.apache.kafka.server.common.ApiMessageAndVersion;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -33,23 +35,24 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Random;
 
 import static org.apache.kafka.clients.admin.ScramMechanism.SCRAM_SHA_256;
 import static org.apache.kafka.clients.admin.ScramMechanism.SCRAM_SHA_512;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 
 @Timeout(value = 40)
 public class ScramImageTest {
-    final static ScramImage IMAGE1;
+    public static final ScramImage IMAGE1;
 
-    final static List<ApiMessageAndVersion> DELTA1_RECORDS;
+    public static final List<ApiMessageAndVersion> DELTA1_RECORDS;
 
-    final static ScramDelta DELTA1;
+    static final ScramDelta DELTA1;
 
-    final static ScramImage IMAGE2;
+    static final ScramImage IMAGE2;
 
     static byte[] randomBuffer(Random random, int length) {
         byte[] buf = new byte[length];
@@ -59,6 +62,7 @@ public class ScramImageTest {
 
     static ScramCredentialData randomScramCredentialData(Random random) {
         return new ScramCredentialData(
+            randomBuffer(random, 1024),
             randomBuffer(random, 1024),
             randomBuffer(random, 1024),
             1024 + random.nextInt(1024));
@@ -82,16 +86,31 @@ public class ScramImageTest {
         IMAGE1 = new ScramImage(image1mechanisms);
 
         DELTA1_RECORDS = new ArrayList<>();
+        // remove all sha512 credentials
+        DELTA1_RECORDS.add(new ApiMessageAndVersion(new RemoveUserScramCredentialRecord().
+            setName("alpha").
+            setMechanism(SCRAM_SHA_512.type()), (short) 0));
         DELTA1_RECORDS.add(new ApiMessageAndVersion(new RemoveUserScramCredentialRecord().
             setName("gamma").
             setMechanism(SCRAM_SHA_512.type()), (short) 0));
         ScramCredentialData secondAlpha256Credential = randomScramCredentialData(random);
+        // add sha256 credential
         DELTA1_RECORDS.add(new ApiMessageAndVersion(new UserScramCredentialRecord().
                 setName("alpha").
                 setMechanism(SCRAM_SHA_256.type()).
-                setIterations(secondAlpha256Credential.iterations()).
                 setSalt(secondAlpha256Credential.salt()).
-                setSaltedPassword(secondAlpha256Credential.saltedPassword()), (short) 0));
+                setStoredKey(secondAlpha256Credential.storedKey()).
+                setServerKey(secondAlpha256Credential.serverKey()).
+                setIterations(secondAlpha256Credential.iterations()), (short) 0));
+        // add sha512 credential re-using name
+        ScramCredentialData secondAlpha512Credential = randomScramCredentialData(random);
+        DELTA1_RECORDS.add(new ApiMessageAndVersion(new UserScramCredentialRecord().
+            setName("alpha").
+            setMechanism(SCRAM_SHA_512.type()).
+            setSalt(secondAlpha512Credential.salt()).
+            setStoredKey(secondAlpha512Credential.storedKey()).
+            setServerKey(secondAlpha512Credential.serverKey()).
+            setIterations(secondAlpha512Credential.iterations()), (short) 0));
         DELTA1 = new ScramDelta(IMAGE1);
         RecordTestUtils.replayAll(DELTA1, DELTA1_RECORDS);
 
@@ -103,59 +122,70 @@ public class ScramImageTest {
         image2mechanisms.put(SCRAM_SHA_256, image2sha256);
 
         Map<String, ScramCredentialData> image2sha512 = new HashMap<>();
-        image2sha512.put("alpha", image1sha512.get("alpha"));
+        image2sha512.put("alpha", secondAlpha512Credential);
         image2mechanisms.put(SCRAM_SHA_512, image2sha512);
 
         IMAGE2 = new ScramImage(image2mechanisms);
     }
 
     @Test
-    public void testEmptyImageRoundTrip() throws Throwable {
-        testToImageAndBack(ScramImage.EMPTY);
+    public void testEmptyImageRoundTrip() {
+        testToImage(ScramImage.EMPTY);
     }
 
     @Test
-    public void testImage1RoundTrip() throws Throwable {
-        testToImageAndBack(IMAGE1);
+    public void testImage1RoundTrip() {
+        testToImage(IMAGE1);
     }
 
     @Test
-    public void testApplyDelta1() throws Throwable {
+    public void testApplyDelta1() {
         assertEquals(IMAGE2, DELTA1.apply());
+        // check image1 + delta1 = image2, since records for image1 + delta1 might differ from records from image2
+        List<ApiMessageAndVersion> records = getImageRecords(IMAGE1);
+        records.addAll(DELTA1_RECORDS);
+        testToImage(IMAGE2, records);
     }
 
     @Test
-    public void testImage2RoundTrip() throws Throwable {
-        testToImageAndBack(IMAGE2);
+    public void testImage2RoundTrip() {
+        testToImage(IMAGE2);
     }
 
-    private void testToImageAndBack(ScramImage image) throws Throwable {
+    private static void testToImage(ScramImage image) {
+        testToImage(image, Optional.empty());
+    }
+
+    private static void testToImage(ScramImage image, Optional<List<ApiMessageAndVersion>> fromRecords) {
+        testToImage(image, fromRecords.orElseGet(() -> getImageRecords(image)));
+    }
+
+    private static void testToImage(ScramImage image, List<ApiMessageAndVersion> fromRecords) {
+        // test from empty image stopping each of the various intermediate images along the way
+        new RecordTestUtils.TestThroughAllIntermediateImagesLeadingToFinalImageHelper<>(
+            () -> ScramImage.EMPTY,
+            ScramDelta::new
+        ).test(image, fromRecords);
+    }
+
+    private static List<ApiMessageAndVersion> getImageRecords(ScramImage image) {
         RecordListWriter writer = new RecordListWriter();
-        image.write(writer, new ImageWriterOptions.Builder().build());
-        ScramDelta delta = new ScramDelta(ScramImage.EMPTY);
-        RecordTestUtils.replayAll(delta, writer.records());
-        ScramImage nextImage = delta.apply();
-        assertEquals(image, nextImage);
+        image.write(writer, new ImageWriterOptions.Builder(MetadataVersion.latestProduction()).build());
+        return writer.records();
     }
 
     @Test
-    public void testEmptyWithInvalidIBP() throws Throwable {
-        ImageWriterOptions imageWriterOptions = new ImageWriterOptions.Builder().
-                setMetadataVersion(MetadataVersion.IBP_3_4_IV0).build();
+    public void testEmptyWithInvalidIBP() {
+        ImageWriterOptions imageWriterOptions = new ImageWriterOptions.Builder(MetadataVersion.IBP_3_4_IV0).build();
         RecordListWriter writer = new RecordListWriter();
         ScramImage.EMPTY.write(writer, imageWriterOptions);
     }
 
     @Test
-    public void testImage1withInvalidIBP() throws Throwable {
-        ImageWriterOptions imageWriterOptions = new ImageWriterOptions.Builder().
-                setMetadataVersion(MetadataVersion.IBP_3_4_IV0).build();
+    public void testImage1withInvalidIBP() {
+        ImageWriterOptions imageWriterOptions = new ImageWriterOptions.Builder(MetadataVersion.IBP_3_4_IV0).build();
         RecordListWriter writer = new RecordListWriter();
-        try {
-            IMAGE1.write(writer, imageWriterOptions);
-            fail("expected exception writing IMAGE with SCRAM records for MetadataVersion.IBP_3_4_IV0");
-        } catch (Exception expected) {
-            // ignore, expected
-        }
+        assertThrows(Exception.class, () -> IMAGE1.write(writer, imageWriterOptions),
+            "expected exception writing IMAGE with SCRAM records for MetadataVersion.IBP_3_4_IV0");
     }
 }

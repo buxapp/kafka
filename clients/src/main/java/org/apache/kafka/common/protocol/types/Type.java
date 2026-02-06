@@ -80,9 +80,23 @@ public abstract class Type {
     }
 
     /**
+     * For annotation in the generated html protocol doc.
+     */
+    public String leftBracket() {
+        return "";
+    }
+
+    /**
+     * For annotation in the generated html protocol doc.
+     */
+    public String rightBracket() {
+        return "";
+    }
+
+    /**
      * A Type that can return its description for documentation purposes.
      */
-    public static abstract class DocumentedType extends Type {
+    public abstract static class DocumentedType extends Type {
 
         /**
          * Short name of the type to identify it in documentation;
@@ -231,7 +245,7 @@ public abstract class Type {
         @Override
         public Object read(ByteBuffer buffer) {
             short value = buffer.getShort();
-            return Integer.valueOf(Short.toUnsignedInt(value));
+            return Short.toUnsignedInt(value);
         }
 
         @Override
@@ -774,7 +788,7 @@ public abstract class Type {
         @Override
         public String documentation() {
             return "Represents a raw sequence of bytes. First the length N+1 is given as an UNSIGNED_VARINT." +
-                    "Then N bytes follow.";
+                    " Then N bytes follow.";
         }
     };
 
@@ -912,11 +926,163 @@ public abstract class Type {
         @Override
         public String documentation() {
             return "Represents a raw sequence of bytes. First the length N+1 is given as an UNSIGNED_VARINT." +
-                    "Then N bytes follow. A null object is represented with a length of 0.";
+                    " Then N bytes follow. A null object is represented with a length of 0.";
+        }
+    };
+
+    public static final DocumentedType RECORDS = new DocumentedType() {
+
+        @Override
+        public void write(ByteBuffer buffer, Object o) {
+            if (o instanceof MemoryRecords) {
+                MemoryRecords records = (MemoryRecords) o;
+                BYTES.write(buffer, records.buffer().duplicate());
+            } else {
+                throw new IllegalArgumentException("Unexpected record type: " + o.getClass());
+            }
+        }
+
+        @Override
+        public MemoryRecords read(ByteBuffer buffer) {
+            ByteBuffer recordsBuffer = (ByteBuffer) BYTES.read(buffer);
+            return MemoryRecords.readableRecords(recordsBuffer);
+        }
+
+        @Override
+        public int sizeOf(Object o) {
+            BaseRecords records = (BaseRecords) o;
+            return 4 + records.sizeInBytes();
+        }
+
+        @Override
+        public String typeName() {
+            return "RECORDS";
+        }
+
+        @Override
+        public BaseRecords validate(Object item) {
+            if (item instanceof MemoryRecords)
+                return (BaseRecords) item;
+
+            throw new SchemaException(item + " is not an instance of " + MemoryRecords.class.getName());
+        }
+
+        @Override
+        public String documentation() {
+            return "Represents a sequence of Kafka records as " + BYTES + ". " +
+                "For a detailed description of records see " +
+                "<a href=\"/documentation/#messageformat\">Message Sets</a>.";
         }
     };
 
     public static final DocumentedType COMPACT_RECORDS = new DocumentedType() {
+
+        @Override
+        public void write(ByteBuffer buffer, Object o) {
+            if (o instanceof MemoryRecords) {
+                MemoryRecords records = (MemoryRecords) o;
+                COMPACT_BYTES.write(buffer, records.buffer().duplicate());
+            } else {
+                throw new IllegalArgumentException("Unexpected record type: " + o.getClass());
+            }
+        }
+
+        @Override
+        public MemoryRecords read(ByteBuffer buffer) {
+            ByteBuffer recordsBuffer = (ByteBuffer) COMPACT_BYTES.read(buffer);
+            return MemoryRecords.readableRecords(recordsBuffer);
+        }
+
+        @Override
+        public int sizeOf(Object o) {
+            BaseRecords records = (BaseRecords) o;
+            int recordsSize = records.sizeInBytes();
+            return ByteUtils.sizeOfUnsignedVarint(recordsSize + 1) + recordsSize;
+        }
+
+        @Override
+        public String typeName() {
+            return "COMPACT_RECORDS";
+        }
+
+        @Override
+        public BaseRecords validate(Object item) {
+            if (item instanceof BaseRecords)
+                return (BaseRecords) item;
+
+            throw new SchemaException(item + " is not an instance of " + BaseRecords.class.getName());
+        }
+
+        @Override
+        public String documentation() {
+            return "Represents a sequence of Kafka records as " + COMPACT_BYTES + ". " +
+                "For a detailed description of records see " +
+                "<a href=\"/documentation/#messageformat\">Message Sets</a>.";
+        }
+    };
+
+    public static final DocumentedType NULLABLE_RECORDS = new DocumentedType() {
+        @Override
+        public boolean isNullable() {
+            return true;
+        }
+
+        @Override
+        public void write(ByteBuffer buffer, Object o) {
+            if (o == null) {
+                NULLABLE_BYTES.write(buffer, null);
+            } else if (o instanceof MemoryRecords) {
+                MemoryRecords records = (MemoryRecords) o;
+                NULLABLE_BYTES.write(buffer, records.buffer().duplicate());
+            } else {
+                throw new IllegalArgumentException("Unexpected record type: " + o.getClass());
+            }
+        }
+
+        @Override
+        public MemoryRecords read(ByteBuffer buffer) {
+            ByteBuffer recordsBuffer = (ByteBuffer) NULLABLE_BYTES.read(buffer);
+            if (recordsBuffer == null) {
+                return null;
+            } else {
+                return MemoryRecords.readableRecords(recordsBuffer);
+            }
+        }
+
+        @Override
+        public int sizeOf(Object o) {
+            if (o == null)
+                return 4;
+
+            BaseRecords records = (BaseRecords) o;
+            return 4 + records.sizeInBytes();
+        }
+
+        @Override
+        public String typeName() {
+            return "NULLABLE_RECORDS";
+        }
+
+        @Override
+        public BaseRecords validate(Object item) {
+            if (item == null)
+                return null;
+
+            if (item instanceof BaseRecords)
+                return (BaseRecords) item;
+
+            throw new SchemaException(item + " is not an instance of " + BaseRecords.class.getName());
+        }
+
+        @Override
+        public String documentation() {
+            return "Represents a sequence of Kafka records as " + NULLABLE_BYTES + ". " +
+                    "For a detailed description of records see " +
+                    "<a href=\"/documentation/#messageformat\">Message Sets</a>.";
+        }
+    };
+
+    public static final DocumentedType COMPACT_NULLABLE_RECORDS = new DocumentedType() {
         @Override
         public boolean isNullable() {
             return true;
@@ -957,7 +1123,7 @@ public abstract class Type {
 
         @Override
         public String typeName() {
-            return "COMPACT_RECORDS";
+            return "COMPACT_NULLABLE_RECORDS";
         }
 
         @Override
@@ -976,67 +1142,6 @@ public abstract class Type {
             return "Represents a sequence of Kafka records as " + COMPACT_NULLABLE_BYTES + ". " +
                 "For a detailed description of records see " +
                 "<a href=\"/documentation/#messageformat\">Message Sets</a>.";
-        }
-    };
-
-    public static final DocumentedType RECORDS = new DocumentedType() {
-        @Override
-        public boolean isNullable() {
-            return true;
-        }
-
-        @Override
-        public void write(ByteBuffer buffer, Object o) {
-            if (o == null) {
-                NULLABLE_BYTES.write(buffer, null);
-            } else if (o instanceof MemoryRecords) {
-                MemoryRecords records = (MemoryRecords) o;
-                NULLABLE_BYTES.write(buffer, records.buffer().duplicate());
-            } else {
-                throw new IllegalArgumentException("Unexpected record type: " + o.getClass());
-            }
-        }
-
-        @Override
-        public MemoryRecords read(ByteBuffer buffer) {
-            ByteBuffer recordsBuffer = (ByteBuffer) NULLABLE_BYTES.read(buffer);
-            if (recordsBuffer == null) {
-                return null;
-            } else {
-                return MemoryRecords.readableRecords(recordsBuffer);
-            }
-        }
-
-        @Override
-        public int sizeOf(Object o) {
-            if (o == null)
-                return 4;
-
-            BaseRecords records = (BaseRecords) o;
-            return 4 + records.sizeInBytes();
-        }
-
-        @Override
-        public String typeName() {
-            return "RECORDS";
-        }
-
-        @Override
-        public BaseRecords validate(Object item) {
-            if (item == null)
-                return null;
-
-            if (item instanceof BaseRecords)
-                return (BaseRecords) item;
-
-            throw new SchemaException(item + " is not an instance of " + BaseRecords.class.getName());
-        }
-
-        @Override
-        public String documentation() {
-            return "Represents a sequence of Kafka records as " + NULLABLE_BYTES + ". " +
-                    "For a detailed description of records see " +
-                    "<a href=\"/documentation/#messageformat\">Message Sets</a>.";
         }
     };
 
@@ -1071,7 +1176,7 @@ public abstract class Type {
         public String documentation() {
             return "Represents an integer between -2<sup>31</sup> and 2<sup>31</sup>-1 inclusive. " +
                     "Encoding follows the variable-length zig-zag encoding from " +
-                    " <a href=\"http://code.google.com/apis/protocolbuffers/docs/encoding.html\"> Google Protocol Buffers</a>.";
+                    " <a href=\"https://code.google.com/apis/protocolbuffers/docs/encoding.html\"> Google Protocol Buffers</a>.";
         }
     };
 
@@ -1106,17 +1211,20 @@ public abstract class Type {
         public String documentation() {
             return "Represents an integer between -2<sup>63</sup> and 2<sup>63</sup>-1 inclusive. " +
                     "Encoding follows the variable-length zig-zag encoding from " +
-                    " <a href=\"http://code.google.com/apis/protocolbuffers/docs/encoding.html\"> Google Protocol Buffers</a>.";
+                    " <a href=\"https://code.google.com/apis/protocolbuffers/docs/encoding.html\"> Google Protocol Buffers</a>.";
         }
     };
 
     private static String toHtml() {
         DocumentedType[] types = {
             BOOLEAN, INT8, INT16, INT32, INT64,
-            UNSIGNED_INT32, VARINT, VARLONG, UUID, FLOAT64,
+            UINT16, UNSIGNED_INT32, VARINT, VARLONG, UUID, FLOAT64,
             STRING, COMPACT_STRING, NULLABLE_STRING, COMPACT_NULLABLE_STRING,
             BYTES, COMPACT_BYTES, NULLABLE_BYTES, COMPACT_NULLABLE_BYTES,
-            RECORDS, new ArrayOf(STRING), new CompactArrayOf(COMPACT_STRING)};
+            RECORDS, COMPACT_RECORDS, NULLABLE_RECORDS, COMPACT_NULLABLE_RECORDS,
+            new ArrayOf(STRING), new CompactArrayOf(COMPACT_STRING), ArrayOf.nullable(STRING), CompactArrayOf.nullable(STRING),
+            new Schema(), new NullableSchema(new Schema())};
+
         final StringBuilder b = new StringBuilder();
         b.append("<table class=\"data-table\"><tbody>\n");
         b.append("<tr>");

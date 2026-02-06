@@ -31,19 +31,18 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
 /**
  * This class represents a utility to capture a checkpoint in a file. It writes down to the file in the below format.
- *
+ * <pre>
  * ========= File beginning =========
  * version: int
  * entries-count: int
  * entry-as-string-on-each-line
  * ========= File end ===============
- *
+ * </pre>
  * Each entry is represented as a string on each line in the checkpoint file. {@link EntryFormatter} is used
  * to convert the entry into a string and vice versa.
  *
@@ -77,20 +76,8 @@ public class CheckpointFile<T> {
             // write to temp file and then swap with the existing file
             try (FileOutputStream fileOutputStream = new FileOutputStream(tempPath.toFile());
                  BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(fileOutputStream, StandardCharsets.UTF_8))) {
-                // Write the version
-                writer.write(Integer.toString(version));
-                writer.newLine();
-
-                // Write the entries count
-                writer.write(Integer.toString(entries.size()));
-                writer.newLine();
-
-                // Write each entry on a new line.
-                for (T entry : entries) {
-                    writer.write(formatter.toString(entry));
-                    writer.newLine();
-                }
-
+                CheckpointWriteBuffer<T> checkpointWriteBuffer = new CheckpointWriteBuffer<>(writer, version, formatter);
+                checkpointWriteBuffer.write(entries);
                 writer.flush();
                 fileOutputStream.getFD().sync();
             }
@@ -101,7 +88,7 @@ public class CheckpointFile<T> {
 
     public List<T> read() throws IOException {
         synchronized (lock) {
-            try (BufferedReader reader = Files.newBufferedReader(absolutePath)) {
+            try (BufferedReader reader = Files.newBufferedReader(absolutePath, StandardCharsets.UTF_8)) {
                 CheckpointReadBuffer<T> checkpointBuffer = new CheckpointReadBuffer<>(absolutePath.toString(), reader, version, formatter);
                 return checkpointBuffer.read();
             }
@@ -109,25 +96,28 @@ public class CheckpointFile<T> {
     }
 
     public static class CheckpointWriteBuffer<T> {
-        private BufferedWriter writer;
-        private int version;
-        private EntryFormatter<T> formatter;
+        private final BufferedWriter writer;
+        private final int version;
+        private final EntryFormatter<T> formatter;
 
         public CheckpointWriteBuffer(BufferedWriter writer,
                                      int version,
                                      EntryFormatter<T> formatter) {
-            this.version = version;
             this.writer = writer;
+            this.version = version;
             this.formatter = formatter;
         }
 
-        public void write(List<T> entries) throws IOException {
-            writer.write(String.valueOf(version));
+        public void write(Collection<T> entries) throws IOException {
+            // Write the version
+            writer.write(Integer.toString(version));
             writer.newLine();
 
-            writer.write(String.valueOf(entries.size()));
+            // Write the entries count
+            writer.write(Integer.toString(entries.size()));
             writer.newLine();
 
+            // Write each entry on a new line.
             for (T entry : entries) {
                 writer.write(formatter.toString(entry));
                 writer.newLine();
@@ -155,7 +145,7 @@ public class CheckpointFile<T> {
         public List<T> read() throws IOException {
             String line = reader.readLine();
             if (line == null)
-                return Collections.emptyList();
+                return List.of();
 
             int readVersion = toInt(line);
             if (readVersion != version) {
@@ -165,14 +155,14 @@ public class CheckpointFile<T> {
 
             line = reader.readLine();
             if (line == null) {
-                return Collections.emptyList();
+                return List.of();
             }
             int expectedSize = toInt(line);
             List<T> entries = new ArrayList<>(expectedSize);
             line = reader.readLine();
             while (line != null) {
                 Optional<T> maybeEntry = formatter.fromString(line);
-                if (!maybeEntry.isPresent()) {
+                if (maybeEntry.isEmpty()) {
                     throw buildMalformedLineException(line);
                 }
                 entries.add(maybeEntry.get());

@@ -22,10 +22,10 @@ import org.apache.kafka.metadata.Replicas;
 import org.apache.kafka.metadata.placement.PartitionAssignment;
 
 import java.util.ArrayList;
-import java.util.Set;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeSet;
 
 
@@ -90,8 +90,7 @@ class PartitionReassignmentReplicas {
         List<Integer> removingReplicas,
         List<Integer> addingReplicas
     ) {
-        return removingReplicas.size() > 0
-            || addingReplicas.size() > 0;
+        return !removingReplicas.isEmpty() || !addingReplicas.isEmpty();
     }
 
 
@@ -120,9 +119,15 @@ class PartitionReassignmentReplicas {
             }
             if (newTargetReplicas.isEmpty()) return Optional.empty();
         }
-        for (int replica : adding) {
-            if (!newTargetIsr.contains(replica)) return Optional.empty();
-        }
+
+        // Wait for all adding sync replicas to join the ISR, as new brokers could be unhealthy.
+        if (!newTargetIsr.containsAll(adding)) return Optional.empty();
+
+        // If the replication factor is being reduced, wait for all target sync replicas to be present in newTargetIsr to avoid
+        // the potential negative impact on ISR. For example: We reassign [0,1,2,3,4] -> [2,3,4,5] when only 0, 1 and 5 are in
+        // ISR. If we complete the reassignment, we end up with ISR of [5]. If we stay with the current assignment, ISR is
+        // [0,1]. So, by completing the reassignment in this case, we are reducing the size of ISR unnecessarily.
+        if (adding.size() < removing.size() && !newTargetIsr.containsAll(newTargetReplicas)) return Optional.empty();
 
         return Optional.of(
             new CompletedReassignment(
@@ -132,14 +137,7 @@ class PartitionReassignmentReplicas {
         );
     }
 
-    static class CompletedReassignment {
-        final List<Integer> replicas;
-        final List<Integer> isr;
-
-        public CompletedReassignment(List<Integer> replicas, List<Integer> isr) {
-            this.replicas = replicas;
-            this.isr = isr;
-        }
+    record CompletedReassignment(List<Integer> replicas, List<Integer> isr) {
     }
 
     List<Integer> originalReplicas() {
@@ -155,8 +153,7 @@ class PartitionReassignmentReplicas {
 
     @Override
     public boolean equals(Object o) {
-        if (!(o instanceof PartitionReassignmentReplicas)) return false;
-        PartitionReassignmentReplicas other = (PartitionReassignmentReplicas) o;
+        if (!(o instanceof PartitionReassignmentReplicas other)) return false;
         return removing.equals(other.removing) &&
             adding.equals(other.adding) &&
             replicas.equals(other.replicas);

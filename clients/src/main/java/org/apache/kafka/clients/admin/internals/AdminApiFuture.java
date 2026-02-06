@@ -19,12 +19,15 @@ package org.apache.kafka.clients.admin.internals;
 import org.apache.kafka.common.KafkaFuture;
 import org.apache.kafka.common.internals.KafkaFutureImpl;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
 public interface AdminApiFuture<K, V> {
+
+    Integer UNKNOWN_BROKER_ID = -1;
 
     /**
      * The initial set of lookup keys. Although this will usually match the fulfillment
@@ -36,6 +39,20 @@ public interface AdminApiFuture<K, V> {
      * @return non-empty set of initial lookup keys
      */
     Set<K> lookupKeys();
+
+    /**
+     * The cached key-broker id mapping. For non-cached values(or lookup strategies that do not make use of a
+     * cache of metadata) the broker id will be {@link #UNKNOWN_BROKER_ID}
+     *
+     * @return mapping of keys to broker ids
+     */
+    default Map<K, Integer> cachedKeyBrokerIdMapping() {
+        Map<K, Integer> result = new HashMap<>();
+        for (K key : lookupKeys()) {
+            result.put(key, UNKNOWN_BROKER_ID);
+        }
+        return result;
+    }
 
     /**
      * Complete the futures associated with the given keys.

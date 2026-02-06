@@ -21,6 +21,7 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.streams.StreamsConfig;
+
 import org.slf4j.Logger;
 
 import java.util.Collections;
@@ -29,6 +30,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.PriorityQueue;
 import java.util.Set;
@@ -56,7 +58,7 @@ import java.util.function.Function;
  * As a consequence of the definition, the PartitionGroup's stream-time is non-decreasing
  * (i.e., it increases or stays the same over time).
  */
-public class PartitionGroup {
+class PartitionGroup extends AbstractPartitionGroup {
 
     private final Logger logger;
     private final Map<TopicPartition, RecordQueue> partitionQueues;
@@ -70,22 +72,7 @@ public class PartitionGroup {
     private int totalBuffered;
     private boolean allBuffered;
     private final Map<TopicPartition, Long> idlePartitionDeadlines = new HashMap<>();
-
-    static class RecordInfo {
-        RecordQueue queue;
-
-        ProcessorNode<?, ?, ?, ?> node() {
-            return queue.source();
-        }
-
-        TopicPartition partition() {
-            return queue.partition();
-        }
-
-        RecordQueue queue() {
-            return queue;
-        }
-    }
+    private final Map<TopicPartition, Long> fetchedLags = new HashMap<>();
 
     PartitionGroup(final LogContext logContext,
                    final Map<TopicPartition, RecordQueue> partitionQueues,
@@ -105,7 +92,8 @@ public class PartitionGroup {
         streamTime = RecordQueue.UNKNOWN;
     }
 
-    public boolean readyToProcess(final long wallClockTime) {
+    @Override
+    ReadyToProcessResult readyToProcess(final long wallClockTime) {
         if (maxTaskIdleMs == StreamsConfig.MAX_TASK_IDLE_MS_DISABLED) {
             if (logger.isTraceEnabled() && !allBuffered && totalBuffered > 0) {
                 final Set<TopicPartition> bufferedPartitions = new HashSet<>();
@@ -124,38 +112,40 @@ public class PartitionGroup {
                         bufferedPartitions,
                         emptyPartitions);
             }
-            return true;
+            return new ReadyToProcessResult(true, Optional.empty());
         }
 
         final Set<TopicPartition> queued = new HashSet<>();
         Map<TopicPartition, Long> enforced = null;
+        final StringBuilder logMessageBuilder = new StringBuilder();
 
         for (final Map.Entry<TopicPartition, RecordQueue> entry : partitionQueues.entrySet()) {
             final TopicPartition partition = entry.getKey();
             final RecordQueue queue = entry.getValue();
 
-
             if (!queue.isEmpty()) {
                 // this partition is ready for processing
+                logger.trace("Partition {} has buffered data, ready for processing", partition);
                 idlePartitionDeadlines.remove(partition);
                 queued.add(partition);
             } else {
-                final OptionalLong fetchedLag = lagProvider.apply(partition);
-
-                if (!fetchedLag.isPresent()) {
+                final Long fetchedLag = fetchedLags.getOrDefault(partition, -1L);
+                appendLog(logMessageBuilder, String.format("Partition %s has fetched lag of %d", partition, fetchedLag));
+                
+                if (fetchedLag == -1L) {
                     // must wait to fetch metadata for the partition
                     idlePartitionDeadlines.remove(partition);
-                    logger.trace("Waiting to fetch data for {}", partition);
-                    return false;
-                } else if (fetchedLag.getAsLong() > 0L) {
+                    appendLog(logMessageBuilder, String.format("\tWaiting to fetch data for %s", partition));
+
+                    return new ReadyToProcessResult(false, Optional.of(logMessageBuilder.toString()));
+                } else if (fetchedLag > 0L) {
                     // must wait to poll the data we know to be on the broker
                     idlePartitionDeadlines.remove(partition);
-                    logger.trace(
-                            "Lag for {} is currently {}, but no data is buffered locally. Waiting to buffer some records.",
-                            partition,
-                            fetchedLag.getAsLong()
-                    );
-                    return false;
+                    appendLog(logMessageBuilder,
+                        String.format("Partition %s has current lag %d, but no data is buffered locally. Waiting to buffer some records.",
+                        partition, fetchedLag));
+
+                    return new ReadyToProcessResult(false, Optional.of(logMessageBuilder.toString()));
                 } else {
                     // p is known to have zero lag. wait for maxTaskIdleMs to see if more data shows up.
                     // One alternative would be to set the deadline to nullableMetadata.receivedTimestamp + maxTaskIdleMs
@@ -166,16 +156,15 @@ public class PartitionGroup {
                     idlePartitionDeadlines.putIfAbsent(partition, wallClockTime + maxTaskIdleMs);
                     final long deadline = idlePartitionDeadlines.get(partition);
                     if (wallClockTime < deadline) {
-                        logger.trace(
-                                "Lag for {} is currently 0 and current time is {}. Waiting for new data to be produced for configured idle time {} (deadline is {}).",
-                                partition,
-                                wallClockTime,
-                                maxTaskIdleMs,
-                                deadline
-                        );
-                        return false;
+                        appendLog(logMessageBuilder, String.format(
+                            "Partition %s has current lag 0 and current time is %d. " +
+                                "Waiting for new data to be produced for configured idle time %d (deadline is %d).",
+                            partition, wallClockTime, maxTaskIdleMs, deadline));
+
+                        return new ReadyToProcessResult(false, Optional.of(logMessageBuilder.toString()));
                     } else {
                         // this partition is ready for processing due to the task idling deadline passing
+                        logger.trace("Partition {} is ready for processing due to the task idling deadline passing", partition);
                         if (enforced == null) {
                             enforced = new HashMap<>();
                         }
@@ -186,10 +175,10 @@ public class PartitionGroup {
         }
         if (enforced == null) {
             logger.trace("All partitions were buffered locally, so this task is ready for processing.");
-            return true;
+            return new ReadyToProcessResult(true, Optional.empty());
         } else if (queued.isEmpty()) {
-            logger.trace("No partitions were buffered locally, so this task is not ready for processing.");
-            return false;
+            appendLog(logMessageBuilder, "No partitions were buffered locally, so this task is not ready for processing.");
+            return new ReadyToProcessResult(false, Optional.of(logMessageBuilder.toString()));
         } else {
             enforcedProcessingSensor.record(1.0d, wallClockTime);
             logger.trace("Continuing to process although some partitions are empty on the broker." +
@@ -202,11 +191,11 @@ public class PartitionGroup {
                     enforced,
                     maxTaskIdleMs,
                     wallClockTime);
-            return true;
+            return new ReadyToProcessResult(true, Optional.empty());
         }
     }
 
-    // visible for testing
+    @Override
     long partitionTimestamp(final TopicPartition partition) {
         final RecordQueue queue = partitionQueues.get(partition);
         if (queue == null) {
@@ -216,6 +205,7 @@ public class PartitionGroup {
     }
 
     // creates queues for new partitions, removes old queues, saves cached records for previously assigned partitions
+    @Override
     void updatePartitions(final Set<TopicPartition> inputPartitions, final Function<TopicPartition, RecordQueue> recordQueueCreator) {
         final Set<TopicPartition> removedPartitions = new HashSet<>();
         final Set<TopicPartition> newInputPartitions = new HashSet<>(inputPartitions);
@@ -238,6 +228,7 @@ public class PartitionGroup {
         allBuffered = allBuffered && newInputPartitions.isEmpty();
     }
 
+    @Override
     void setPartitionTime(final TopicPartition partition, final long partitionTime) {
         final RecordQueue queue = partitionQueues.get(partition);
         if (queue == null) {
@@ -249,11 +240,7 @@ public class PartitionGroup {
         queue.setPartitionTime(partitionTime);
     }
 
-    /**
-     * Get the next record and queue
-     *
-     * @return StampedRecord
-     */
+    @Override
     StampedRecord nextRecord(final RecordInfo info, final long wallClockTime) {
         StampedRecord record = null;
 
@@ -262,38 +249,39 @@ public class PartitionGroup {
 
         if (queue != null) {
             // get the first record from this queue.
+            final int oldSize = queue.size();
             record = queue.poll(wallClockTime);
 
             if (record != null) {
-                --totalBuffered;
+                totalBuffered -= oldSize - queue.size();
+                logger.trace("Partition {} polling next record:, oldSize={}, newSize={}, totalBuffered={}, recordTimestamp={}",
+                    queue.partition(), oldSize, queue.size(), totalBuffered, record.timestamp);
 
                 if (queue.isEmpty()) {
                     // if a certain queue has been drained, reset the flag
                     allBuffered = false;
+                    logger.trace("Partition {} queue is now empty, allBuffered=false", queue.partition());
                 } else {
                     nonEmptyQueuesByTime.offer(queue);
                 }
 
                 // always update the stream-time to the record's timestamp yet to be processed if it is larger
                 if (record.timestamp > streamTime) {
+                    final long oldStreamTime = streamTime;
                     streamTime = record.timestamp;
                     recordLatenessSensor.record(0, wallClockTime);
+                    logger.trace("Partition {} stream time updated from {} to {}", queue.partition(), oldStreamTime, streamTime);
                 } else {
                     recordLatenessSensor.record(streamTime - record.timestamp, wallClockTime);
                 }
             }
+        } else {
+            logger.trace("Partition pulling nextRecord: no queue available");
         }
-
         return record;
     }
 
-    /**
-     * Adds raw records to this partition group
-     *
-     * @param partition  the partition
-     * @param rawRecords the raw records
-     * @return the queue size for the partition
-     */
+    @Override
     int addRawRecords(final TopicPartition partition, final Iterable<ConsumerRecord<byte[], byte[]>> rawRecords) {
         final RecordQueue recordQueue = partitionQueues.get(partition);
 
@@ -325,13 +313,12 @@ public class PartitionGroup {
         return Collections.unmodifiableSet(partitionQueues.keySet());
     }
 
-    /**
-     * Return the stream-time of this partition group defined as the largest timestamp seen across all partitions
-     */
+    @Override
     long streamTime() {
         return streamTime;
     }
 
+    @Override
     Long headRecordOffset(final TopicPartition partition) {
         final RecordQueue recordQueue = partitionQueues.get(partition);
 
@@ -342,9 +329,22 @@ public class PartitionGroup {
         return recordQueue.headRecordOffset();
     }
 
+    @Override
+    Optional<Integer> headRecordLeaderEpoch(final TopicPartition partition) {
+        final RecordQueue recordQueue = partitionQueues.get(partition);
+
+        if (recordQueue == null) {
+            throw new IllegalStateException("Partition " + partition + " not found.");
+        }
+
+        return recordQueue.headRecordLeaderEpoch();
+    }
+
+
     /**
      * @throws IllegalStateException if the record's partition does not belong to this partition group
      */
+    @Override
     int numBuffered(final TopicPartition partition) {
         final RecordQueue recordQueue = partitionQueues.get(partition);
 
@@ -355,14 +355,17 @@ public class PartitionGroup {
         return recordQueue.size();
     }
 
+    @Override
     int numBuffered() {
         return totalBuffered;
     }
 
+    // for testing only
     boolean allPartitionsBufferedLocally() {
         return allBuffered;
     }
 
+    @Override
     void clear() {
         for (final RecordQueue queue : partitionQueues.values()) {
             queue.clear();
@@ -370,11 +373,35 @@ public class PartitionGroup {
         nonEmptyQueuesByTime.clear();
         totalBuffered = 0;
         streamTime = RecordQueue.UNKNOWN;
+        fetchedLags.clear();
     }
 
+    @Override
     void close() {
         for (final RecordQueue queue : partitionQueues.values()) {
             queue.close();
         }
+    }
+
+    @Override
+    void updateLags() {
+        if (maxTaskIdleMs != StreamsConfig.MAX_TASK_IDLE_MS_DISABLED) {
+            for (final TopicPartition tp : partitionQueues.keySet()) {
+                final OptionalLong l = lagProvider.apply(tp);
+                if (l.isPresent()) {
+                    fetchedLags.put(tp, l.getAsLong());
+                    logger.trace("Updated lag for {} to {}", tp, l.getAsLong());
+                } else {
+                    fetchedLags.remove(tp);
+                }
+            }
+        }
+    }
+
+    private void appendLog(final StringBuilder sb, final String msg) {
+        if (sb.length() > 0) {
+            sb.append("\n");
+        }
+        sb.append(msg);
     }
 }

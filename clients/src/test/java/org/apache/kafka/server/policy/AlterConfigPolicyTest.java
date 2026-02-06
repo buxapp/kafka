@@ -21,6 +21,7 @@ import org.apache.kafka.common.config.ConfigResource.Type;
 import org.apache.kafka.server.policy.AlterConfigPolicy.RequestMetadata;
 
 import org.junit.jupiter.api.Test;
+
 import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -37,8 +38,8 @@ public class AlterConfigPolicyTest {
 
         assertEquals(requestMetadata, requestMetadata);
 
-        assertNotEquals(requestMetadata, null);
-        assertNotEquals(requestMetadata, new Object());
+        assertNotEquals(null, requestMetadata);
+        assertNotEquals(new Object(), requestMetadata);
         assertNotEquals(requestMetadata, new RequestMetadata(
             new ConfigResource(Type.BROKER, "1"),
             Collections.singletonMap("foo", "bar")
