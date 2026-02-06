@@ -1,0 +1,137 @@
+name: Sync Fork with Apache Kafka
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      branches:
+        description: 'Branches to sync (comma-separated, e.g., trunk,3.9)'
+        required: false
+        default: 'trunk,3.9'
+
+jobs:
+  sync-fork:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/apache/kafka.git || true
+          git remote -v
+
+      - name: Determine branches to sync
+        id: branches
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BRANCHES="${{ github.event.inputs.branches }}"
+          else
+            BRANCHES="trunk,3.9"
+          fi
+          echo "branches=$BRANCHES" >> $GITHUB_OUTPUT
+
+      - name: Sync branches
+        env:
+          BRANCHES: ${{ steps.branches.outputs.branches }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IFS=',' read -ra BRANCH_ARRAY <<< "$BRANCHES"
+
+          for branch in "${BRANCH_ARRAY[@]}"; do
+            branch=$(echo "$branch" | xargs)  # trim whitespace
+            echo "::group::Syncing branch: $branch"
+
+            # Fetch latest from upstream
+            echo "Fetching upstream/$branch..."
+            git fetch upstream "$branch" || {
+              echo "::error::Failed to fetch upstream/$branch"
+              continue
+            }
+
+            # Check if branch exists locally
+            if git show-ref --verify --quiet "refs/heads/$branch"; then
+              echo "Branch $branch exists locally"
+              git checkout "$branch"
+            elif git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+              echo "Branch $branch exists remotely, creating local branch"
+              git checkout -b "$branch" "origin/$branch"
+            else
+              echo "::warning::Branch $branch does not exist, skipping"
+              continue
+            fi
+
+            # Get current commit before sync
+            BEFORE_COMMIT=$(git rev-parse HEAD)
+            echo "Current HEAD: $BEFORE_COMMIT"
+
+            # Get upstream commit
+            UPSTREAM_COMMIT=$(git rev-parse "upstream/$branch")
+            echo "Upstream HEAD: $UPSTREAM_COMMIT"
+
+            # Check if already up to date
+            if [ "$BEFORE_COMMIT" = "$UPSTREAM_COMMIT" ]; then
+              echo "Branch $branch is already up to date with upstream"
+            else
+              # Try to merge upstream changes
+              echo "Merging upstream/$branch into $branch..."
+              if git merge "upstream/$branch" -m "Sync $branch with apache/kafka upstream"; then
+                echo "Merge successful"
+                AFTER_COMMIT=$(git rev-parse HEAD)
+
+                # Push if there are new commits
+                if [ "$BEFORE_COMMIT" != "$AFTER_COMMIT" ]; then
+                  echo "Pushing changes to origin/$branch..."
+                  git push origin "$branch" || {
+                    echo "::error::Failed to push $branch"
+                    continue
+                  }
+                  echo "✅ Successfully synced and pushed $branch"
+                else
+                  echo "No new commits to push"
+                fi
+              else
+                echo "::error::Merge conflict detected on $branch"
+                echo "::error::Manual intervention required to resolve conflicts"
+                git merge --abort
+
+                # Create an issue to notify about the conflict
+                echo "Creating notification issue about merge conflict..."
+                gh issue create \
+                  --title "Fork sync conflict on $branch" \
+                  --body "Automatic fork synchronization encountered a merge conflict on the \`$branch\` branch. Manual resolution is required. Please merge upstream changes manually while preserving BUX-specific patches." \
+                  --label "sync,conflict" \
+                  || echo "Failed to create issue"
+              fi
+            fi
+
+            echo "::endgroup::"
+          done
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Sync Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Attempted to sync the following branches:" >> $GITHUB_STEP_SUMMARY
+          IFS=',' read -ra BRANCH_ARRAY <<< "${{ steps.branches.outputs.branches }}"
+          for branch in "${BRANCH_ARRAY[@]}"; do
+            branch=$(echo "$branch" | xargs)
+            echo "- $branch" >> $GITHUB_STEP_SUMMARY
+          done
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Check the logs above for detailed results." >> $GITHUB_STEP_SUMMARY
