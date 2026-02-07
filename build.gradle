@@ -39,10 +39,7 @@ plugins {
   id 'org.nosphere.apache.rat' version "0.8.1"
   id "io.swagger.core.v3.swagger-gradle-plugin" version "${swaggerVersion}"
 
-  // When updating the spotbugs gradle plugin, check if it already
-  // includes spotbugs version 4.7.4, in which case CVE-2022-42920 can
-  // be dropped from gradle/resources/dependencycheck-suppressions.xml
-  id "com.github.spotbugs" version '5.1.3' apply false
+  id "com.github.spotbugs" version '6.0.25' apply false
   id 'org.scoverage' version '8.0.3' apply false
   // Updating the shadow plugin version to 8.1.1 causes issue with signing and publishing the shadowed
   // artifacts - see https://github.com/johnrengelman/shadow/issues/901
@@ -165,7 +162,8 @@ allprojects {
           libs.nettyHandler,
           libs.nettyTransportNativeEpoll,
           // be explicit about the reload4j version instead of relying on the transitive versions
-          libs.reload4j
+          libs.reload4j,
+          libs.commonsLang
         )
       }
     }
@@ -542,6 +540,41 @@ subprojects {
 
     useJUnitPlatform {
       excludeTags "integration"
+      includeEngines 'junit-jupiter'
+    }
+
+    retry {
+      maxRetries = userMaxTestRetries
+      maxFailures = userMaxTestRetryFailures
+    }
+  }
+
+  // Do not run this task with Java 8. It will use an older version of Mockito,
+  // which depends on an older Byte Buddy version that does not support Java 25.
+  task testWithJava25(type: Test, dependsOn: compileJava) {
+    description = 'Run tests using Java 25 toolchain'
+
+    javaLauncher = javaToolchains.launcherFor {
+      languageVersion = JavaLanguageVersion.of(25)
+    }
+
+    maxParallelForks = maxTestForks
+    ignoreFailures = userIgnoreFailures
+    maxHeapSize = defaultMaxHeapSize
+    jvmArgs = defaultJvmArgs
+
+    testLogging {
+      events = userTestLoggingEvents ?: testLoggingEvents
+      showStandardStreams = userShowStandardStreams ?: testShowStandardStreams
+      exceptionFormat = testExceptionFormat
+      displayGranularity = 0
+    }
+
+    logTestStdout.rehydrate(delegate, owner, this)()
+
+    exclude testsToExclude
+
+    useJUnitPlatform {
       includeEngines 'junit-jupiter'
     }
 
@@ -978,6 +1011,7 @@ project(':core') {
     testImplementation project(':server').sourceSets.test.output
     testImplementation libs.bcpkix
     testImplementation libs.mockitoCore
+    testImplementation libs.jqwik
     testImplementation(libs.apacheda) {
       exclude group: 'xml-apis', module: 'xml-apis'
       // `mina-core` is a transitive dependency for `apacheds` and `apacheda`.
@@ -1185,6 +1219,12 @@ project(':core') {
     attributes(
       'Version': "${version}"
     )
+  }
+
+  test {
+    useJUnitPlatform {
+      includeEngines 'jqwik', 'junit-jupiter'
+    }
   }
 
   tasks.create(name: "copyDependantTestLibs", type: Copy) {
@@ -1553,6 +1593,7 @@ project(':clients') {
     testImplementation libs.jose4j
     testImplementation libs.junitJupiter
     testImplementation libs.reload4j
+    testImplementation libs.jqwik
     testImplementation libs.mockitoCore
     testImplementation libs.mockitoJunitJupiter // supports MockitoExtension
 

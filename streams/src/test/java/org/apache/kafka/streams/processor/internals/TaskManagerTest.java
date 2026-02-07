@@ -1649,6 +1649,52 @@ public class TaskManagerTest {
         verifyNoInteractions(consumer);
     }
 
+    @Test
+    public void shouldAddFailedRestoredTasksBackToStateUpdaterOnException() {
+        final StreamTask task1 = statefulTask(taskId00, taskId00ChangelogPartitions)
+            .inState(State.RESTORING)
+            .withInputPartitions(taskId00Partitions).build();
+        final StreamTask task2 = statefulTask(taskId01, taskId01ChangelogPartitions)
+            .inState(State.RESTORING)
+            .withInputPartitions(taskId01Partitions).build();
+        final StreamTask task3 = statefulTask(taskId02, taskId02ChangelogPartitions)
+            .inState(State.RESTORING)
+            .withInputPartitions(taskId02Partitions).build();
+
+        // Use LinkedHashSet to ensure predictable iteration order
+        final Set<StreamTask> restoredTasks = new java.util.LinkedHashSet<>();
+        restoredTasks.add(task1);
+        restoredTasks.add(task2);
+        restoredTasks.add(task3);
+
+        final TasksRegistry tasks = mock(TasksRegistry.class);
+        final TaskManager taskManager = setUpTransitionToRunningOfRestoredTask(restoredTasks, tasks);
+
+        // task1 completes successfully, task2 throws StreamsException from maybeInitTaskTimeoutOrThrow
+        // task3 is never processed because task2 throws
+        final TimeoutException timeoutException = new TimeoutException();
+        doThrow(timeoutException).when(task2).completeRestoration(noOpResetter);
+        doThrow(new StreamsException("Task timeout exceeded", task2.id())).when(task2).maybeInitTaskTimeoutOrThrow(anyLong(), eq(timeoutException));
+
+        assertThrows(StreamsException.class, () -> taskManager.checkStateUpdater(time.milliseconds(), noOpResetter));
+
+        // task1 should be successfully transitioned
+        verify(tasks).addTask(task1);
+        verify(consumer).resume(task1.inputPartitions());
+        verify(task1).clearTaskTimeout();
+
+        // task2 should be added back to state updater once in the finally block
+        // (the add in the catch block doesn't execute because maybeInitTaskTimeoutOrThrow throws)
+        verify(stateUpdater).add(task2);
+        verify(tasks, never()).addTask(task2);
+        verify(task2, never()).clearTaskTimeout();
+
+        // task3 should also be added back to state updater in the finally block
+        verify(stateUpdater).add(task3);
+        verify(tasks, never()).addTask(task3);
+        verify(task3, never()).clearTaskTimeout();
+    }
+
     private TaskManager setUpTransitionToRunningOfRestoredTask(final Set<StreamTask> statefulTasks,
                                                                final TasksRegistry tasks) {
         when(stateUpdater.restoresActiveTasks()).thenReturn(true);
@@ -3099,12 +3145,80 @@ public class TaskManagerTest {
 
         assertThat(task00.commitNeeded, is(false));
         assertThat(task00.commitPrepared, is(true));
-        assertThat(task00.commitNeeded, is(false));
+        assertThat(task01.commitNeeded, is(false));
         assertThat(task01.commitPrepared, is(true));
         assertThat(task02.commitPrepared, is(false));
         assertThat(task10.commitPrepared, is(false));
 
         verify(consumer).commitSync(expectedCommittedOffsets);
+    }
+
+    @Test
+    public void shouldNotCommitIfNoRevokedTasksNeedCommitting() {
+        final StateMachineTask task00 = new StateMachineTask(taskId00, taskId00Partitions, true, stateManager);
+
+        final StateMachineTask task01 = new StateMachineTask(taskId01, taskId01Partitions, true, stateManager);
+        task01.setCommitNeeded();
+
+        final StateMachineTask task02 = new StateMachineTask(taskId02, taskId02Partitions, true, stateManager);
+
+        final Map<TaskId, Set<TopicPartition>> assignmentActive = mkMap(
+            mkEntry(taskId00, taskId00Partitions),
+            mkEntry(taskId01, taskId01Partitions),
+            mkEntry(taskId02, taskId02Partitions)
+        );
+
+        when(consumer.assignment()).thenReturn(assignment);
+
+        when(activeTaskCreator.createTasks(any(), eq(assignmentActive)))
+            .thenReturn(asList(task00, task01, task02));
+
+        taskManager.handleAssignment(assignmentActive, Collections.emptyMap());
+        assertThat(taskManager.tryToCompleteRestoration(time.milliseconds(), null), is(true));
+        assertThat(task00.state(), is(Task.State.RUNNING));
+        assertThat(task01.state(), is(Task.State.RUNNING));
+        assertThat(task02.state(), is(Task.State.RUNNING));
+
+        taskManager.handleRevocation(taskId00Partitions);
+
+        assertThat(task00.commitPrepared, is(false));
+        assertThat(task01.commitPrepared, is(false));
+        assertThat(task02.commitPrepared, is(false));
+    }
+
+    @Test
+    public void shouldNotCommitIfNoRevokedTasksNeedCommittingWithEOSv2() {
+        final TaskManager taskManager = setUpTaskManager(ProcessingMode.EXACTLY_ONCE_V2, false);
+
+        final StateMachineTask task00 = new StateMachineTask(taskId00, taskId00Partitions, true, stateManager);
+
+        final StateMachineTask task01 = new StateMachineTask(taskId01, taskId01Partitions, true, stateManager);
+        task01.setCommitNeeded();
+
+        final StateMachineTask task02 = new StateMachineTask(taskId02, taskId02Partitions, true, stateManager);
+
+        final Map<TaskId, Set<TopicPartition>> assignmentActive = mkMap(
+            mkEntry(taskId00, taskId00Partitions),
+            mkEntry(taskId01, taskId01Partitions),
+            mkEntry(taskId02, taskId02Partitions)
+        );
+
+        when(consumer.assignment()).thenReturn(assignment);
+
+        when(activeTaskCreator.createTasks(any(), eq(assignmentActive)))
+            .thenReturn(asList(task00, task01, task02));
+
+        taskManager.handleAssignment(assignmentActive, Collections.emptyMap());
+        assertThat(taskManager.tryToCompleteRestoration(time.milliseconds(), null), is(true));
+        assertThat(task00.state(), is(Task.State.RUNNING));
+        assertThat(task01.state(), is(Task.State.RUNNING));
+        assertThat(task02.state(), is(Task.State.RUNNING));
+
+        taskManager.handleRevocation(taskId00Partitions);
+
+        assertThat(task00.commitPrepared, is(false));
+        assertThat(task01.commitPrepared, is(false));
+        assertThat(task02.commitPrepared, is(false));
     }
 
     @Test
