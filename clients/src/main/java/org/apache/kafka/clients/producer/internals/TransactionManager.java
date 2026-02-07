@@ -185,7 +185,7 @@ public class TransactionManager {
 
     private int inFlightRequestCorrelationId = NO_INFLIGHT_REQUEST_CORRELATION_ID;
     private Node transactionCoordinator;
-    private Node consumerGroupCoordinator;
+    private final Map<String, Node> consumerGroupCoordinator;
     private boolean coordinatorSupportsBumpingEpoch;
 
     private volatile State currentState = State.UNINITIALIZED;
@@ -259,7 +259,7 @@ public class TransactionManager {
         this.log = logContext.logger(TransactionManager.class);
         this.transactionTimeoutMs = transactionTimeoutMs;
         this.transactionCoordinator = null;
-        this.consumerGroupCoordinator = null;
+        this.consumerGroupCoordinator = new HashMap<>();
         this.newPartitionsInTransaction = new HashSet<>();
         this.pendingPartitionsInTransaction = new HashSet<>();
         this.partitionsInTransaction = new HashSet<>();
@@ -835,10 +835,10 @@ public class TransactionManager {
         }
     }
 
-    Node coordinator(FindCoordinatorRequest.CoordinatorType type) {
+    Node coordinator(CoordinatorType type, String coordinatorKey) {
         switch (type) {
             case GROUP:
-                return consumerGroupCoordinator;
+                return consumerGroupCoordinator.get(coordinatorKey);
             case TRANSACTION:
                 return transactionCoordinator;
             default:
@@ -1062,7 +1062,7 @@ public class TransactionManager {
     private void lookupCoordinator(FindCoordinatorRequest.CoordinatorType type, String coordinatorKey) {
         switch (type) {
             case GROUP:
-                consumerGroupCoordinator = null;
+                consumerGroupCoordinator.remove(coordinatorKey);
                 break;
             case TRANSACTION:
                 transactionCoordinator = null;
@@ -1494,7 +1494,7 @@ public class TransactionManager {
                 Node node = new Node(coordinatorData.nodeId(), coordinatorData.host(), coordinatorData.port());
                 switch (coordinatorType) {
                     case GROUP:
-                        consumerGroupCoordinator = node;
+                        consumerGroupCoordinator.put(key, node);
                         break;
                     case TRANSACTION:
                         transactionCoordinator = node;
