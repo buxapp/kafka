@@ -57,6 +57,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -74,6 +75,7 @@ import static org.apache.kafka.common.utils.Utils.union;
 import static org.apache.kafka.streams.internals.StreamsConfigUtils.ProcessingMode.EXACTLY_ONCE_V2;
 import static org.apache.kafka.streams.processor.internals.StateManagerUtil.parseTaskDirectoryName;
 
+@SuppressWarnings("checkstyle:ClassFanOutComplexity")
 public class TaskManager {
 
     private static final String BUG_ERROR_MESSAGE = "This indicates a bug. " +
@@ -973,9 +975,12 @@ public class TaskManager {
         }
     }
 
+    /**
+     * @throws StreamsException if fetching committed offsets timed out often enough to exceed task timeout
+     */
     private void transitRestoredTaskToRunning(final Task task,
                                               final long now,
-                                              final java.util.function.Consumer<Set<TopicPartition>> offsetResetter) {
+                                              final java.util.function.Consumer<Set<TopicPartition>> offsetResetter) throws StreamsException {
         try {
             task.completeRestoration(offsetResetter);
             tasks.addTask(task);
@@ -1051,8 +1056,22 @@ public class TaskManager {
     private void handleRestoredTasksFromStateUpdater(final long now,
                                                      final java.util.function.Consumer<Set<TopicPartition>> offsetResetter) {
         final Duration timeout = Duration.ZERO;
-        for (final Task task : stateUpdater.drainRestoredActiveTasks(timeout)) {
-            transitRestoredTaskToRunning(task, now, offsetResetter);
+        // Create a mutable copy to support iterator.remove()
+        final Set<StreamTask> restoredTasks = new LinkedHashSet<>(stateUpdater.drainRestoredActiveTasks(timeout));
+        final Iterator<StreamTask> iterator = restoredTasks.iterator();
+
+        try {
+            while (iterator.hasNext()) {
+                final Task task = iterator.next();
+                transitRestoredTaskToRunning(task, now, offsetResetter);
+                iterator.remove(); // Remove successfully transitioned tasks
+            }
+        } finally {
+            // Add back any tasks that we drained but didn't successfully transition
+            // from the state updater, so that they are closed during shutdown.
+            for (final Task task : restoredTasks) {
+                stateUpdater.add(task);
+            }
         }
     }
 
@@ -1077,12 +1096,16 @@ public class TaskManager {
         final Set<TaskId> lockedTaskIds = activeRunningTaskIterable().stream().map(Task::id).collect(Collectors.toSet());
         maybeLockTasks(lockedTaskIds);
 
+        boolean revokedTasksNeedCommit = false;
         for (final Task task : activeRunningTaskIterable()) {
             if (remainingRevokedPartitions.containsAll(task.inputPartitions())) {
                 // when the task input partitions are included in the revoked list,
                 // this is an active task and should be revoked
+
                 revokedActiveTasks.add(task);
                 remainingRevokedPartitions.removeAll(task.inputPartitions());
+
+                revokedTasksNeedCommit |= task.commitNeeded();
             } else if (task.commitNeeded()) {
                 commitNeededActiveTasks.add(task);
             }
@@ -1096,11 +1119,9 @@ public class TaskManager {
                          "have been cleaned up by the handleAssignment callback.", remainingRevokedPartitions);
         }
 
-        prepareCommitAndAddOffsetsToMap(revokedActiveTasks, consumedOffsetsPerTask);
-
-        // if we need to commit any revoking task then we just commit all of those needed committing together
-        final boolean shouldCommitAdditionalTasks = !consumedOffsetsPerTask.isEmpty();
-        if (shouldCommitAdditionalTasks) {
+        if (revokedTasksNeedCommit) {
+            prepareCommitAndAddOffsetsToMap(revokedActiveTasks, consumedOffsetsPerTask);
+            // if we need to commit any revoking task then we just commit all of those needed committing together
             prepareCommitAndAddOffsetsToMap(commitNeededActiveTasks, consumedOffsetsPerTask);
         }
 
@@ -1109,10 +1130,12 @@ public class TaskManager {
         // as such we just need to skip those dirty tasks in the checkpoint
         final Set<Task> dirtyTasks = new HashSet<>();
         try {
-            // in handleRevocation we must call commitOffsetsOrTransaction() directly rather than
-            // commitAndFillInConsumedOffsetsAndMetadataPerTaskMap() to make sure we don't skip the
-            // offset commit because we are in a rebalance
-            taskExecutor.commitOffsetsOrTransaction(consumedOffsetsPerTask);
+            if (revokedTasksNeedCommit) {
+                // in handleRevocation we must call commitOffsetsOrTransaction() directly rather than
+                // commitAndFillInConsumedOffsetsAndMetadataPerTaskMap() to make sure we don't skip the
+                // offset commit because we are in a rebalance
+                taskExecutor.commitOffsetsOrTransaction(consumedOffsetsPerTask);
+            }
         } catch (final TaskCorruptedException e) {
             log.warn("Some tasks were corrupted when trying to commit offsets, these will be cleaned and revived: {}",
                      e.corruptedTasks());
@@ -1145,7 +1168,7 @@ public class TaskManager {
             }
         }
 
-        if (shouldCommitAdditionalTasks) {
+        if (revokedTasksNeedCommit) {
             for (final Task task : commitNeededActiveTasks) {
                 if (!dirtyTasks.contains(task)) {
                     try {

@@ -185,7 +185,7 @@ public class TransactionManager {
 
     private int inFlightRequestCorrelationId = NO_INFLIGHT_REQUEST_CORRELATION_ID;
     private Node transactionCoordinator;
-    private final Map<String, Node> consumerGroupCoordinator;
+    private Node consumerGroupCoordinator;
     private boolean coordinatorSupportsBumpingEpoch;
 
     private volatile State currentState = State.UNINITIALIZED;
@@ -259,7 +259,7 @@ public class TransactionManager {
         this.log = logContext.logger(TransactionManager.class);
         this.transactionTimeoutMs = transactionTimeoutMs;
         this.transactionCoordinator = null;
-        this.consumerGroupCoordinator = new HashMap<>();
+        this.consumerGroupCoordinator = null;
         this.newPartitionsInTransaction = new HashSet<>();
         this.pendingPartitionsInTransaction = new HashSet<>();
         this.partitionsInTransaction = new HashSet<>();
@@ -635,7 +635,7 @@ public class TransactionManager {
 
     public synchronized void handleCompletedBatch(ProducerBatch batch, ProduceResponse.PartitionResponse response) {
         int lastAckedSequence = maybeUpdateLastAckedSequence(batch.topicPartition, batch.lastSequence());
-        log.debug("ProducerId: {}; Set last ack'd sequence number for topic-partition {} to {}",
+        log.trace("ProducerId: {}; Set last ack'd sequence number for topic-partition {} to {}",
                 batch.producerId(),
                 batch.topicPartition,
                 lastAckedSequence);
@@ -835,10 +835,10 @@ public class TransactionManager {
         }
     }
 
-    Node coordinator(CoordinatorType type, String coordinatorKey) {
+    Node coordinator(FindCoordinatorRequest.CoordinatorType type) {
         switch (type) {
             case GROUP:
-                return consumerGroupCoordinator.get(coordinatorKey);
+                return consumerGroupCoordinator;
             case TRANSACTION:
                 return transactionCoordinator;
             default:
@@ -1062,7 +1062,7 @@ public class TransactionManager {
     private void lookupCoordinator(FindCoordinatorRequest.CoordinatorType type, String coordinatorKey) {
         switch (type) {
             case GROUP:
-                consumerGroupCoordinator.remove(coordinatorKey);
+                consumerGroupCoordinator = null;
                 break;
             case TRANSACTION:
                 transactionCoordinator = null;
@@ -1494,7 +1494,7 @@ public class TransactionManager {
                 Node node = new Node(coordinatorData.nodeId(), coordinatorData.host(), coordinatorData.port());
                 switch (coordinatorType) {
                     case GROUP:
-                        consumerGroupCoordinator.put(builder.data().key(), node);
+                        consumerGroupCoordinator = node;
                         break;
                     case TRANSACTION:
                         transactionCoordinator = node;
